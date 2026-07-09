@@ -2,6 +2,7 @@ import logging
 
 import polars as pl
 import pandas as pd
+import tqdm
 from maia2 import inference, model
 
 from utils.data import createPlayerDict, getPlayers
@@ -19,7 +20,7 @@ if __name__ == "__main__":
     predictions = []
     accuracies = []
 
-    for player_name, player_index in players_dict.items():
+    for player_name, player_index in tqdm.tqdm(players_dict.items()):
         player_positions = positions.filter(pl.col("player_index") == player_index)
 
         maia2_input = (
