@@ -1,5 +1,7 @@
-import numpy as np
 import math
+
+import numpy as np
+
 
 def nucleus_prune(moves: dict[str, float], top_p: float = 0.95) -> list[str]:
     sorted_moves = sorted(moves.items(), key=lambda x: x[1], reverse=True)
@@ -13,6 +15,7 @@ def nucleus_prune(moves: dict[str, float], top_p: float = 0.95) -> list[str]:
             return [move for move, _ in sorted_moves[:k]]
 
     return [move for move, _ in sorted_moves]
+
 
 def information_prune(moves: dict[str, float], epsilon: float = 0.05) -> list[str]:
     sorted_moves = sorted(moves.items(), key=lambda x: x[1], reverse=True)

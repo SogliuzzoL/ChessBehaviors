@@ -1,7 +1,7 @@
 import logging
 
-import polars as pl
 import pandas as pd
+import polars as pl
 import tqdm
 from maia2 import inference, model
 
@@ -39,7 +39,6 @@ if __name__ == "__main__":
 
         maia2_output.insert(0, "player_index", player_index)
         predictions.append(maia2_output)
-
 
         accuracies.append(
             {"player_index": player_index, "player_name": player_name, "accuracy": acc}
