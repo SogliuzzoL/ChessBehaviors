@@ -37,7 +37,7 @@ if __name__ == "__main__":
     predictions = []
     accuracies = []
 
-    for player_name, player_index in tqdm.tqdm(players_dict.items(), desc="Joueurs"):
+    for player_name, player_index in tqdm.tqdm(players_dict.items(), desc="Players"):
         player_positions = positions.filter(pl.col("player_index") == player_index)
 
         unique_games = player_positions.select("game_id").unique()["game_id"].to_list()
