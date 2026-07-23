@@ -1,16 +1,20 @@
 import logging
 
+import chess
 import pandas as pd
 import polars as pl
 import tqdm
-from maia2 import inference, model
+from maia2 import model
 
+from models.model import Maia2
 from utils.data import createPlayerDict, getPlayers
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
-    maia2_model = model.from_pretrained(type="rapid", device="gpu")
+    raw_maia_model = model.from_pretrained(type="rapid", device="gpu")
+    maia2_model = Maia2(model=raw_maia_model, pruning_fn=None)
 
     players = getPlayers("data/metadata.csv")
     players_dict = createPlayerDict(players)
@@ -23,31 +27,49 @@ if __name__ == "__main__":
     for player_name, player_index in tqdm.tqdm(players_dict.items()):
         player_positions = positions.filter(pl.col("player_index") == player_index)
 
-        maia2_input = (
-            player_positions.rename({"fen": "board"})
-            .with_columns(
-                [pl.lit(2500).alias("active_elo"), pl.lit(2500).alias("opponent_elo")]
+        correct_count = 0
+        total_count = len(player_positions)
+        player_preds = []
+
+        for row in tqdm.tqdm(player_positions.iter_rows(named=True), total=total_count):
+            fen = row["fen"]
+            target_move = row["move"]
+            board = chess.Board(fen)
+
+            moves_probs, _ = maia2_model.predict(board)
+
+            predicted_move = (
+                max(moves_probs.items(), key=lambda x: x[1])[0] if moves_probs else ""
             )
-            .select(["board", "move", "active_elo", "opponent_elo"])
-        )
 
-        maia2_input = maia2_input.to_pandas()
+            if predicted_move == target_move:
+                correct_count += 1
 
-        maia2_output, acc = inference.inference_batch(
-            maia2_input, maia2_model, verbose=1, batch_size=1024, num_workers=4
-        )
+            player_preds.append(
+                {
+                    "player_index": player_index,
+                    "fen": fen,
+                    "move": target_move,
+                    "predicted_move": predicted_move,
+                    "moves_probs": str(moves_probs),
+                }
+            )
 
-        maia2_output.insert(0, "player_index", player_index)
-        predictions.append(maia2_output)
+        acc = correct_count / total_count if total_count > 0 else 0.0
 
+        predictions.append(pd.DataFrame(player_preds))
         accuracies.append(
-            {"player_index": player_index, "player_name": player_name, "accuracy": acc}
+            {
+                "player_index": player_index,
+                "player_name": player_name,
+                "accuracy": acc,
+            }
         )
 
         logger.info(f"Player {player_name} (index {player_index}) accuracy: {acc}")
 
-    predictions = pd.concat(predictions)
-    predictions.to_csv("data/maia2_predictions.csv", index=False)
+    predictions_df = pd.concat(predictions, ignore_index=True)
+    predictions_df.to_csv("data/maia2_predictions.csv", index=False)
 
-    accuracies = pl.DataFrame(accuracies)
-    accuracies.write_csv("data/maia2_accuracies.csv")
+    accuracies_df = pl.DataFrame(accuracies)
+    accuracies_df.write_csv("data/maia2_accuracies.csv")
