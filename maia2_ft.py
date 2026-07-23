@@ -1,5 +1,4 @@
 import logging
-import random
 
 import chess
 import pandas as pd
@@ -8,24 +7,16 @@ import tqdm
 from maia2 import model
 
 from models.model import Maia2FT
-from utils.data import createPlayerDict, getPlayers
+from utils.data import createPlayerDict, getPlayers, set_seed, split_games_into_folds
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def split_games_into_folds(game_ids: list, n_splits: int = 5) -> list[list]:
-    shuffled_games = game_ids.copy()
-    random.seed(42)
-    random.shuffle(shuffled_games)
-
-    folds = [[] for _ in range(n_splits)]
-    for idx, game_id in enumerate(shuffled_games):
-        folds[idx % n_splits].append(game_id)
-    return folds
-
-
 if __name__ == "__main__":
+    SEED = 42
+    set_seed(SEED)
+
     raw_maia_model = model.from_pretrained(type="rapid", device="gpu")
 
     players = getPlayers("data/metadata.csv")
@@ -46,7 +37,7 @@ if __name__ == "__main__":
             continue
 
         n_splits = min(5, len(unique_games))
-        game_folds = split_games_into_folds(unique_games, n_splits=n_splits)
+        game_folds = split_games_into_folds(unique_games, n_splits=n_splits, seed=SEED)
 
         player_preds = []
         correct_count = 0
@@ -58,10 +49,16 @@ if __name__ == "__main__":
             train_pos = player_positions.filter(~pl.col("game_id").is_in(test_games))
             test_pos = player_positions.filter(pl.col("game_id").is_in(test_games))
 
-            maia2_ft_model.reset_player_embedding(player_index)
-            maia2_ft_model.fit_player(player_index, train_pos, epochs=3, lr=1e-3)
+            set_seed(SEED + fold_idx)
 
-            for row in test_pos.iter_rows(named=True):
+            maia2_ft_model.reset_player_embedding(player_index)
+            maia2_ft_model.fit_player(
+                player_index, train_pos, epochs=3, batch_size=256, lr=1e-3
+            )
+
+            for row in tqdm.tqdm(
+                test_pos.iter_rows(named=True), desc="Testing", leave=False
+            ):
                 fen = row["fen"]
                 target_move = row["move"]
                 board = chess.Board(fen)

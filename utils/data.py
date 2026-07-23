@@ -1,19 +1,12 @@
+import os
+import random
+
 import chess
 import chess.pgn as pgn
+import numpy as np
 import polars as pl
-from torch.utils.data import Dataset
-from tqdm import tqdm
-
-
-class ChessDataset(Dataset):
-    def __init__(self) -> None:
-        pass
-
-    def __len__(self) -> int:
-        return 0
-
-    def __getitem__(self, idx: int) -> None:
-        pass
+import torch
+import tqdm
 
 
 def getPGNmetadata(file_path: str, user_id: str, game_id: str) -> dict | None:
@@ -127,3 +120,27 @@ def flattenData(
 
     df = pl.DataFrame(positions)
     return df
+
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def split_games_into_folds(
+    game_ids: list, n_splits: int = 5, seed: int = 42
+) -> list[list]:
+    shuffled_games = game_ids.copy()
+    random.seed(seed)
+    random.shuffle(shuffled_games)
+
+    folds = [[] for _ in range(n_splits)]
+    for idx, game_id in enumerate(shuffled_games):
+        folds[idx % n_splits].append(game_id)
+    return folds
