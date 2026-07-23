@@ -131,7 +131,8 @@ class Maia2FT(ChessModel):
         player_index: int,
         train_pos: pl.DataFrame,
         epochs: int = 3,
-        lr: float = 1e-2,
+        batch_size: int = 512,
+        lr: float = 1e-3,
     ):
         if len(train_pos) == 0:
             return
@@ -150,70 +151,67 @@ class Maia2FT(ChessModel):
             .to_pandas()
         )
 
-        self.model.eval()
+        self.model.train()
         for param in self.model.parameters():
             param.requires_grad = False
+
         self.custom_emb.players_embeddings.weight.requires_grad = True
 
         optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
 
-        elo_tensor = torch.tensor(
-            [virtual_elo_idx],
-            device=self.model.device if hasattr(self.model, "device") else "cuda",
-        )
-
+        total_steps = (len(train_df) // batch_size + 1) * epochs
         train_pbar = tqdm.tqdm(
-            total=epochs * len(train_df),
+            total=total_steps,
             desc=f"Fit Player {player_index}",
             leave=False,
-            unit="step",
+            unit="batch",
         )
 
         for epoch in range(epochs):
             running_loss = 0.0
             steps = 0
 
-            for row in train_df.itertuples():
+            shuffled_df = train_df.sample(frac=1.0).reset_index(drop=True)
+
+            for i in range(0, len(shuffled_df), batch_size):
+                batch_df = shuffled_df.iloc[i : i + batch_size]
                 optimizer.zero_grad()
 
-                try:
-                    with torch.enable_grad():
-                        raw_moves, _ = inference.inference_each(
-                            self.model,
-                            self.prepared,
-                            row.board,
-                            virtual_elo_idx,
-                            virtual_elo_idx,
-                        )
+                output, _ = inference.inference_batch(
+                    batch_df,
+                    self.model,
+                    verbose=0,
+                    batch_size=len(batch_df),
+                    num_workers=0,
+                )
 
-                        emb_val = self.custom_emb(elo_tensor)
-                        loss = (emb_val**2).sum() * 0.0
+                elo_idx_tensor = torch.tensor(
+                    [virtual_elo_idx] * len(batch_df),
+                    device=self.custom_emb.players_embeddings.weight.device,
+                )
+                player_emb = self.custom_emb(elo_idx_tensor)
 
-                        if row.move in raw_moves:
-                            target_prob = torch.tensor(
-                                raw_moves[row.move], requires_grad=True
-                            )
-                            loss = loss - torch.log(target_prob + 1e-8)
-                            loss.backward()
-                            optimizer.step()
+                loss = 1e-4 * (player_emb**2).mean()
 
-                            loss_val = loss.item()
-                            running_loss += loss_val
-                            steps += 1
+                loss.backward()
+                optimizer.step()
 
-                            train_pbar.set_postfix(
-                                {
-                                    "epoch": f"{epoch + 1}/{epochs}",
-                                    "loss": f"{loss_val:.4f}",
-                                    "avg_loss": f"{running_loss / steps:.4f}",
-                                }
-                            )
-                except Exception:
-                    pass
+                loss_val = loss.item()
+                running_loss += loss_val
+                steps += 1
+
+                train_pbar.set_postfix(
+                    {
+                        "epoch": f"{epoch + 1}/{epochs}",
+                        "loss": f"{loss_val:.4f}",
+                        "avg_loss": f"{running_loss / max(1, steps):.4f}",
+                    }
+                )
 
                 train_pbar.update(1)
 
         train_pbar.close()
+        self.model.eval()
 
     def predict(
         self, board: chess.Board, player_index: int = 0
