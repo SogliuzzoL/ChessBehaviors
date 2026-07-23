@@ -11,6 +11,8 @@ from utils.data import createPlayerDict, getPlayers
 from utils.pruning import nucleus_prune
 
 logger = logging.getLogger(__name__)
+N = 50
+
 
 if __name__ == "__main__":
     raw_maia_model = model.from_pretrained(type="rapid", device="gpu")
@@ -19,7 +21,7 @@ if __name__ == "__main__":
     maia2_model = Maia2(model=raw_maia_model, pruning_fn=prune_fn)
 
     descent_agent = DescentModelWrapper(
-        base_model=maia2_model, max_iterations=50, timeout=1.0
+        base_model=maia2_model, max_iterations=N, timeout=1.0
     )
 
     players = getPlayers("data/metadata.csv")
@@ -75,7 +77,9 @@ if __name__ == "__main__":
         logger.info(f"Player {player_name} (index {player_index}) accuracy: {acc}")
 
     predictions_df = pd.concat(predictions, ignore_index=True)
-    predictions_df.to_csv("data/maia2_nucleus_descent_predictions.csv", index=False)
+    predictions_df.to_csv(
+        f"data/maia2_nucleus_descent_{N}_predictions.csv", index=False
+    )
 
     accuracies_df = pl.DataFrame(accuracies)
-    accuracies_df.write_csv("data/maia2_nucleus_descent_accuracies.csv")
+    accuracies_df.write_csv(f"data/maia2_nucleus_descent_{N}_accuracies.csv")
