@@ -1,7 +1,9 @@
 import logging
+from collections import Counter
 
 import pandas as pd
 import polars as pl
+import tqdm
 
 from utils.data import createPlayerDict, getPlayers
 
@@ -11,61 +13,71 @@ logger = logging.getLogger(__name__)
 if __name__ == "__main__":
     players = getPlayers("data/metadata.csv")
     players_dict = createPlayerDict(players)
-    positions = pl.read_csv("data/positions.csv")
 
-    logger.info("Computing marginal distributions...")
+    positions_pl = pl.read_csv("data/positions.csv")
 
-    move_counts = positions.group_by(["player_index", "fen", "move"]).agg(
-        pl.len().alias("count")
-    )
-
-    total_counts = move_counts.group_by(["player_index", "fen"]).agg(
-        pl.sum("count").alias("total")
-    )
-
-    distributions = move_counts.join(
-        total_counts, on=["player_index", "fen"]
-    ).with_columns((pl.col("count") / pl.col("total")).alias("prob"))
-
-    top_moves = (
-        distributions.sort("prob", descending=True)
-        .group_by(["player_index", "fen"])
-        .first()
-        .select(["player_index", "fen", pl.col("move").alias("predicted_move")])
-    )
-
-    dist_dict = distributions.group_by(["player_index", "fen"]).agg(
-        pl.struct(["move", "prob"])
-        .map_elements(
-            lambda x: str({item["move"]: round(item["prob"], 6) for item in x}),
-            return_dtype=pl.String,
-        )
-        .alias("moves_probs")
-    )
-
-    logger.info("Aligning distributions over all positions...")
-    final_positions = (
-        positions.join(top_moves, on=["player_index", "fen"], how="left")
-        .join(dist_dict, on=["player_index", "fen"], how="left")
-        .select(["player_index", "fen", "move", "predicted_move", "moves_probs"])
-    )
-
-    logger.info("Computing marginal accuracies by player...")
-    predictions_df = final_positions.to_pandas()
+    predictions = []
     accuracies = []
 
-    for player_name, player_index in players_dict.items():
-        player_preds = predictions_df[predictions_df["player_index"] == player_index]
-        total_count = len(player_preds)
+    for player_name, player_index in tqdm.tqdm(players_dict.items()):
+        player_df = (
+            positions_pl.filter(pl.col("player_index") == player_index)
+            .to_pandas()
+        )
 
-        if total_count > 0:
-            correct_count = (
-                player_preds["predicted_move"] == player_preds["move"]
-            ).sum()
-            acc = correct_count / total_count
-        else:
-            acc = 0.0
+        total_count = len(player_df)
+        if total_count == 0:
+            accuracies.append(
+                {
+                    "player_index": player_index,
+                    "player_name": player_name,
+                    "accuracy": 0.0,
+                }
+            )
+            continue
 
+        fen_groups = player_df.groupby("fen")["move"].apply(list).to_dict()
+
+        fen_marginal_probs = {}
+        fen_top_move = {}
+
+        for fen, moves in fen_groups.items():
+            counts = Counter(moves)
+            total_fen_moves = len(moves)
+
+            probs = {
+                move: round(cnt / total_fen_moves, 6)
+                for move, cnt in counts.items()
+            }
+            fen_marginal_probs[fen] = str(probs)
+
+            fen_top_move[fen] = counts.most_common(1)[0][0]
+
+        player_preds = []
+        correct_count = 0
+
+        for row in player_df.itertuples(index=False):
+            fen = row.fen
+            target_move = row.move
+
+            predicted_move = fen_top_move[fen]
+            moves_probs = fen_marginal_probs[fen]
+
+            if predicted_move == target_move:
+                correct_count += 1
+
+            player_preds.append(
+                {
+                    "player_index": player_index,
+                    "fen": fen,
+                    "move": target_move,
+                    "predicted_move": predicted_move,
+                    "moves_probs": moves_probs,
+                }
+            )
+
+        acc = correct_count / total_count
+        predictions.append(pd.DataFrame(player_preds))
         accuracies.append(
             {
                 "player_index": player_index,
@@ -73,8 +85,11 @@ if __name__ == "__main__":
                 "accuracy": acc,
             }
         )
+
         logger.info(f"Player {player_name} (index {player_index}) accuracy: {acc:.4f}")
 
+    predictions_df = pd.concat(predictions, ignore_index=True)
     predictions_df.to_csv("data/ground_truth_predictions.csv", index=False)
+
     accuracies_df = pl.DataFrame(accuracies)
     accuracies_df.write_csv("data/ground_truth_accuracies.csv")
