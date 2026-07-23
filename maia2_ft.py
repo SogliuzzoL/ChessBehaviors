@@ -57,7 +57,10 @@ if __name__ == "__main__":
             )
 
             for row in tqdm.tqdm(
-                test_pos.iter_rows(named=True), desc="Testing", leave=False
+                test_pos.iter_rows(named=True),
+                desc="Testing",
+                leave=False,
+                total=len(test_pos),
             ):
                 fen = row["fen"]
                 target_move = row["move"]
