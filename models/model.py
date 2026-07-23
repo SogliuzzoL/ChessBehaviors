@@ -9,7 +9,8 @@ import torch.nn as nn
 import torch.optim as optim
 import tqdm
 from maia2 import inference
-from maia2.utils import board_to_tensor, get_all_possible_moves, mirror_move
+from maia2.inference import preprocessing
+from maia2.utils import create_elo_dict, get_all_possible_moves, mirror_move
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -71,20 +72,25 @@ class DescentModelWrapper(ChessModel):
 
 
 class PlayerTrainDataset(Dataset):
-    def __init__(self, train_df: pd.DataFrame, all_moves_dict: dict):
+    def __init__(self, train_df: pd.DataFrame, all_moves_dict: dict, elo_dict: dict):
         self.samples = []
         for row in train_df.itertuples():
-            board = chess.Board(row.board)
+            fen = row.board
             target_move = row.move
 
-            if board.turn == chess.BLACK:
-                board = board.mirror()
-                target_move = mirror_move(target_move)
+            try:
+                board_input, _, _, _ = preprocessing(
+                    fen, 2500, 2500, elo_dict, all_moves_dict
+                )
 
-            if target_move in all_moves_dict:
-                tensor_board = board_to_tensor(board)
-                move_idx = all_moves_dict[target_move]
-                self.samples.append((tensor_board, move_idx))
+                if fen.split(" ")[1] == "b":
+                    target_move = mirror_move(target_move)
+
+                if target_move in all_moves_dict:
+                    move_idx = all_moves_dict[target_move]
+                    self.samples.append((board_input, move_idx))
+            except Exception:
+                continue
 
     def __len__(self):
         return len(self.samples)
@@ -131,6 +137,7 @@ class Maia2FT(ChessModel):
 
         all_moves = get_all_possible_moves()
         self.all_moves_dict = {move: i for i, move in enumerate(all_moves)}
+        self.elo_dict = create_elo_dict()
 
         original_emb = getattr(
             self.model,
@@ -171,7 +178,8 @@ class Maia2FT(ChessModel):
         train_df = (
             train_pos.rename({"fen": "board"}).select(["board", "move"]).to_pandas()
         )
-        dataset = PlayerTrainDataset(train_df, self.all_moves_dict)
+
+        dataset = PlayerTrainDataset(train_df, self.all_moves_dict, self.elo_dict)
         if len(dataset) == 0:
             return
 
@@ -185,8 +193,7 @@ class Maia2FT(ChessModel):
         optimizer = optim.AdamW(
             [self.custom_emb.players_embeddings.weight], lr=lr, weight_decay=1e-4
         )
-
-        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
         device = next(self.model.parameters()).device
 
@@ -230,11 +237,9 @@ class Maia2FT(ChessModel):
                 total_loss = ce_loss + l2_anchor_weight * anchor_loss
 
                 total_loss.backward()
-
                 torch.nn.utils.clip_grad_norm_(
                     [self.custom_emb.players_embeddings.weight], max_norm=1.0
                 )
-
                 optimizer.step()
 
                 loss_val = total_loss.item()
@@ -246,7 +251,7 @@ class Maia2FT(ChessModel):
                         "epoch": f"{epoch + 1}/{epochs}",
                         "loss": f"{loss_val:.4f}",
                         "ce_loss": f"{ce_loss.item():.4f}",
-                        "avg_loss": f"{running_loss / steps:.4f}",
+                        "avg": f"{running_loss / steps:.4f}",
                     }
                 )
                 train_pbar.update(1)
