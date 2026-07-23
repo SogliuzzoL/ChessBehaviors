@@ -10,7 +10,12 @@ import torch.optim as optim
 import tqdm
 from maia2 import inference
 from maia2.inference import preprocessing
-from maia2.utils import create_elo_dict, get_all_possible_moves, mirror_move
+from maia2.utils import (
+    board_to_tensor,
+    create_elo_dict,
+    get_all_possible_moves,
+    mirror_move,
+)
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -262,11 +267,51 @@ class Maia2FT(ChessModel):
     def predict(
         self, board: chess.Board, player_index: int = 0
     ) -> Tuple[dict[str, float], float]:
+        device = next(self.model.parameters()).device
         virtual_elo_idx = self.max_maia_idx + 1 + player_index
 
-        raw_moves, value = inference.inference_each(
-            self.model, self.prepared, board.fen(), virtual_elo_idx, virtual_elo_idx
-        )
+        fen = board.fen()
+        black_flag = False
+
+        if fen.split(" ")[1] == "b":
+            proc_board = chess.Board(fen).mirror()
+            black_flag = True
+        else:
+            proc_board = chess.Board(fen)
+
+        board_input = board_to_tensor(proc_board).unsqueeze(0).to(device)
+        elos_self = torch.tensor([virtual_elo_idx], device=device)
+        elos_oppo = torch.tensor([virtual_elo_idx], device=device)
+
+        legal_moves = torch.zeros(len(self.all_moves_dict), device=device)
+        legal_indices = [
+            self.all_moves_dict[m.uci()]
+            for m in proc_board.legal_moves
+            if m.uci() in self.all_moves_dict
+        ]
+        if legal_indices:
+            legal_moves[torch.tensor(legal_indices, device=device)] = 1.0
+
+        self.model.eval()
+        with torch.no_grad():
+            logits_maia, _, logits_value = self.model(board_input, elos_self, elos_oppo)
+            logits_maia_legal = logits_maia * legal_moves
+            probs = logits_maia_legal.softmax(dim=-1).squeeze(0).cpu().tolist()
+
+            val = (logits_value / 2 + 0.5).clamp(0, 1).item()
+            if black_flag:
+                val = 1 - val
+
+        all_moves_reversed = {v: k for k, v in self.all_moves_dict.items()}
+        raw_moves = {}
+        for idx in legal_indices:
+            move_uci = all_moves_reversed[idx]
+            if black_flag:
+                move_uci = mirror_move(move_uci)
+            raw_moves[move_uci] = round(probs[idx], 4)
+
+        raw_moves = dict(sorted(raw_moves.items(), key=lambda x: x[1], reverse=True))
+
         legal_uci_moves = {m.uci() for m in board.legal_moves}
         legal_moves_dict = {
             move: score for move, score in raw_moves.items() if move in legal_uci_moves
@@ -285,4 +330,5 @@ class Maia2FT(ChessModel):
             legal_moves_dict = {
                 move: score / total for move, score in legal_moves_dict.items()
             }
-        return legal_moves_dict, value
+
+        return legal_moves_dict, val
