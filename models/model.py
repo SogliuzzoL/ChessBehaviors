@@ -157,17 +157,24 @@ class Maia2FT(ChessModel):
 
         optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
 
-        for epoch in tqdm.tqdm(range(epochs)):
+        elo_tensor = torch.tensor(
+            [virtual_elo_idx],
+            device=self.model.device if hasattr(self.model, "device") else "cuda",
+        )
+
+        train_pbar = tqdm.tqdm(
+            total=epochs * len(train_df),
+            desc=f"Fit Player {player_index}",
+            leave=False,
+            unit="step",
+        )
+
+        for epoch in range(epochs):
+            running_loss = 0.0
+            steps = 0
+
             for row in train_df.itertuples():
                 optimizer.zero_grad()
-                board = chess.Board(row.board)
-
-                elo_tensor = torch.tensor(
-                    [virtual_elo_idx],
-                    device=self.model.device
-                    if hasattr(self.model, "device")
-                    else "cuda",
-                )
 
                 try:
                     with torch.enable_grad():
@@ -178,8 +185,10 @@ class Maia2FT(ChessModel):
                             virtual_elo_idx,
                             virtual_elo_idx,
                         )
+
                         emb_val = self.custom_emb(elo_tensor)
                         loss = (emb_val**2).sum() * 0.0
+
                         if row.move in raw_moves:
                             target_prob = torch.tensor(
                                 raw_moves[row.move], requires_grad=True
@@ -187,8 +196,24 @@ class Maia2FT(ChessModel):
                             loss = loss - torch.log(target_prob + 1e-8)
                             loss.backward()
                             optimizer.step()
+
+                            loss_val = loss.item()
+                            running_loss += loss_val
+                            steps += 1
+
+                            train_pbar.set_postfix(
+                                {
+                                    "epoch": f"{epoch + 1}/{epochs}",
+                                    "loss": f"{loss_val:.4f}",
+                                    "avg_loss": f"{running_loss / steps:.4f}",
+                                }
+                            )
                 except Exception:
-                    continue
+                    pass
+
+                train_pbar.update(1)
+
+        train_pbar.close()
 
     def predict(
         self, board: chess.Board, player_index: int = 0
