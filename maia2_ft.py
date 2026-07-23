@@ -1,4 +1,5 @@
 import logging
+import random
 
 import chess
 import pandas as pd
@@ -11,6 +12,18 @@ from utils.data import createPlayerDict, getPlayers
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def split_games_into_folds(game_ids: list, n_splits: int = 5) -> list[list]:
+    shuffled_games = game_ids.copy()
+    random.seed(42)
+    random.shuffle(shuffled_games)
+
+    folds = [[] for _ in range(n_splits)]
+    for idx, game_id in enumerate(shuffled_games):
+        folds[idx % n_splits].append(game_id)
+    return folds
+
 
 if __name__ == "__main__":
     raw_maia_model = model.from_pretrained(type="rapid", device="gpu")
@@ -32,18 +45,21 @@ if __name__ == "__main__":
         if not unique_games:
             continue
 
+        n_splits = min(5, len(unique_games))
+        game_folds = split_games_into_folds(unique_games, n_splits=n_splits)
+
         player_preds = []
         correct_count = 0
         total_count = len(player_positions)
 
-        for test_game_id in tqdm.tqdm(
-            unique_games, desc=f"CV {player_name}", leave=False
+        for fold_idx, test_games in enumerate(
+            tqdm.tqdm(game_folds, desc=f"5-Fold CV {player_name}", leave=False)
         ):
-            train_pos = player_positions.filter(pl.col("game_id") != test_game_id)
-            test_pos = player_positions.filter(pl.col("game_id") == test_game_id)
+            train_pos = player_positions.filter(~pl.col("game_id").is_in(test_games))
+            test_pos = player_positions.filter(pl.col("game_id").is_in(test_games))
 
             maia2_ft_model.reset_player_embedding(player_index)
-            maia2_ft_model.fit_player(player_index, train_pos, epochs=3, lr=1e-3)
+            maia2_ft_model.fit_player(player_index, train_pos, epochs=3, lr=1e-2)
 
             for row in test_pos.iter_rows(named=True):
                 fen = row["fen"]
@@ -84,7 +100,7 @@ if __name__ == "__main__":
         )
 
         logger.info(
-            f"Player {player_name} (index {player_index}) CV Accuracy: {acc:.4f}"
+            f"Player {player_name} (index {player_index}) 5-Fold CV Accuracy: {acc:.4f}"
         )
 
     predictions_df = pd.concat(predictions, ignore_index=True)
