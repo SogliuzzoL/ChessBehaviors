@@ -186,8 +186,9 @@ class Maia2FT(ChessModel):
 
         device = next(self.model.parameters()).device
 
+        total_batches = epochs * len(dataloader)
         train_pbar = tqdm.tqdm(
-            total=epochs * len(dataloader),
+            total=total_batches,
             desc=f"Fit Player {player_index}",
             leave=False,
             unit="batch",

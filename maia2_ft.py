@@ -59,7 +59,7 @@ if __name__ == "__main__":
             test_pos = player_positions.filter(pl.col("game_id").is_in(test_games))
 
             maia2_ft_model.reset_player_embedding(player_index)
-            maia2_ft_model.fit_player(player_index, train_pos, epochs=3, lr=1e-2)
+            maia2_ft_model.fit_player(player_index, train_pos, epochs=3, lr=1e-3)
 
             for row in test_pos.iter_rows(named=True):
                 fen = row["fen"]
