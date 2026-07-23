@@ -3,7 +3,6 @@ import logging
 import chess
 import pandas as pd
 import polars as pl
-import torch
 import tqdm
 from maia2 import model
 
@@ -43,20 +42,8 @@ if __name__ == "__main__":
             train_pos = player_positions.filter(pl.col("game_id") != test_game_id)
             test_pos = player_positions.filter(pl.col("game_id") == test_game_id)
 
-            with torch.no_grad():
-                init_weights = (
-                    maia2_ft_model.custom_emb.elo_embeddings.weight[
-                        maia2_ft_model.max_maia_idx
-                    ]
-                    .detach()
-                    .clone()
-                )
-                maia2_ft_model.custom_emb.players_embeddings.weight.data[
-                    player_index
-                ] = init_weights
-
-            if len(train_pos) > 0:
-                pass
+            maia2_ft_model.reset_player_embedding(player_index)
+            maia2_ft_model.fit_player(player_index, train_pos, epochs=3, lr=1e-3)
 
             for row in test_pos.iter_rows(named=True):
                 fen = row["fen"]
@@ -100,7 +87,6 @@ if __name__ == "__main__":
             f"Player {player_name} (index {player_index}) CV Accuracy: {acc:.4f}"
         )
 
-    # Sauvegarde des résultats
     predictions_df = pd.concat(predictions, ignore_index=True)
     predictions_df.to_csv("data/maia2_ft_predictions.csv", index=False)
 

@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Tuple
 
 import chess
+import pandas as pd
+import polars as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -114,31 +116,58 @@ class Maia2FT(ChessModel):
         else:
             self.model.net.elo_embedding = self.custom_emb
 
-    def train_player_embedding(
+    def reset_player_embedding(self, player_index: int):
+        with torch.no_grad():
+            init_weights = (
+                self.custom_emb.elo_embeddings.weight[self.max_maia_idx]
+                .detach()
+                .clone()
+            )
+            self.custom_emb.players_embeddings.weight.data[player_index] = init_weights
+
+    def fit_player(
         self,
         player_index: int,
-        dataloader: torch.utils.data.DataLoader,
-        epochs: int = 5,
+        train_pos: pl.DataFrame,
+        epochs: int = 3,
         lr: float = 1e-3,
     ):
+        if len(train_pos) == 0:
+            return
+
+        virtual_elo_idx = self.max_maia_idx + 1 + player_index
+
+        train_df = (
+            train_pos.rename({"fen": "board"})
+            .with_columns(
+                [
+                    pl.lit(virtual_elo_idx).alias("active_elo"),
+                    pl.lit(virtual_elo_idx).alias("opponent_elo"),
+                ]
+            )
+            .select(["board", "move", "active_elo", "opponent_elo"])
+            .to_pandas()
+        )
+
         self.model.eval()
         for param in self.model.parameters():
             param.requires_grad = False
-
         self.custom_emb.players_embeddings.weight.requires_grad = True
 
         optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
         criterion = nn.CrossEntropyLoss()
 
-        virtual_elo_idx = self.max_maia_idx + 1 + player_index
+        prepared_batch = self.prepared.prepare_batch(train_df)
 
         for epoch in range(epochs):
-            for batch_boards, batch_move_targets in dataloader:
-                optimizer.zero_grad()
-                logits = self.model.forward_board(batch_boards, virtual_elo_idx)
-                loss = criterion(logits, batch_move_targets)
-                loss.backward()
-                optimizer.step()
+            optimizer.zero_grad()
+            output = self.model(prepared_batch)
+            logits = output.move_logits
+            targets = prepared_batch.move_targets
+
+            loss = criterion(logits, targets)
+            loss.backward()
+            optimizer.step()
 
     def predict(
         self, board: chess.Board, player_index: int = 0
