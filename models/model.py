@@ -158,9 +158,10 @@ class Maia2FT(ChessModel):
         self,
         player_index: int,
         train_pos: pl.DataFrame,
-        epochs: int = 3,
+        epochs: int = 1,
         batch_size: int = 256,
-        lr: float = 1e-3,
+        lr: float = 3e-4,
+        l2_anchor_weight: float = 1e-2,
     ):
         if len(train_pos) == 0:
             return
@@ -181,10 +182,20 @@ class Maia2FT(ChessModel):
             param.requires_grad = False
         self.custom_emb.players_embeddings.weight.requires_grad = True
 
-        optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
-        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.AdamW(
+            [self.custom_emb.players_embeddings.weight], lr=lr, weight_decay=1e-4
+        )
+
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
         device = next(self.model.parameters()).device
+
+        with torch.no_grad():
+            ref_elo_emb = (
+                self.custom_emb.elo_embeddings.weight[self.max_maia_idx]
+                .detach()
+                .clone()
+            )
 
         total_batches = epochs * len(dataloader)
         train_pbar = tqdm.tqdm(
@@ -209,11 +220,24 @@ class Maia2FT(ChessModel):
 
                 logits_maia, _, _ = self.model(boards, elos_self, elos_oppo)
 
-                loss = criterion(logits_maia, targets)
-                loss.backward()
+                ce_loss = criterion(logits_maia, targets)
+
+                current_player_emb = self.custom_emb.players_embeddings.weight[
+                    player_index
+                ]
+                anchor_loss = torch.mean((current_player_emb - ref_elo_emb) ** 2)
+
+                total_loss = ce_loss + l2_anchor_weight * anchor_loss
+
+                total_loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(
+                    [self.custom_emb.players_embeddings.weight], max_norm=1.0
+                )
+
                 optimizer.step()
 
-                loss_val = loss.item()
+                loss_val = total_loss.item()
                 running_loss += loss_val
                 steps += 1
 
@@ -221,6 +245,7 @@ class Maia2FT(ChessModel):
                     {
                         "epoch": f"{epoch + 1}/{epochs}",
                         "loss": f"{loss_val:.4f}",
+                        "ce_loss": f"{ce_loss.item():.4f}",
                         "avg_loss": f"{running_loss / steps:.4f}",
                     }
                 )

@@ -52,9 +52,7 @@ if __name__ == "__main__":
             set_seed(SEED + fold_idx)
 
             maia2_ft_model.reset_player_embedding(player_index)
-            maia2_ft_model.fit_player(
-                player_index, train_pos, epochs=3, batch_size=256, lr=1e-3
-            )
+            maia2_ft_model.fit_player(player_index, train_pos)
 
             for row in tqdm.tqdm(
                 test_pos.iter_rows(named=True),
