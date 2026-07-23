@@ -130,7 +130,7 @@ class Maia2FT(ChessModel):
         player_index: int,
         train_pos: pl.DataFrame,
         epochs: int = 3,
-        lr: float = 1e-3,
+        lr: float = 1e-2,
     ):
         if len(train_pos) == 0:
             return
@@ -157,27 +157,37 @@ class Maia2FT(ChessModel):
         optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
 
         for epoch in range(epochs):
-            optimizer.zero_grad()
+            for row in train_df.itertuples():
+                optimizer.zero_grad()
+                board = chess.Board(row.board)
 
-            batch_inputs = (
-                inference.prepare_batch(train_df, self.prepared)
-                if hasattr(inference, "prepare_batch")
-                else None
-            )
-
-            if batch_inputs is not None:
-                output = self.model(batch_inputs)
-                loss = (
-                    output.loss
-                    if hasattr(output, "loss")
-                    else nn.functional.cross_entropy(
-                        output.move_logits, batch_inputs.move_targets
-                    )
+                elo_tensor = torch.tensor(
+                    [virtual_elo_idx],
+                    device=self.model.device
+                    if hasattr(self.model, "device")
+                    else "cuda",
                 )
-                loss.backward()
-                optimizer.step()
-            else:
-                break
+
+                try:
+                    with torch.enable_grad():
+                        raw_moves, _ = inference.inference_each(
+                            self.model,
+                            self.prepared,
+                            row.board,
+                            virtual_elo_idx,
+                            virtual_elo_idx,
+                        )
+                        emb_val = self.custom_emb(elo_tensor)
+                        loss = (emb_val**2).sum() * 0.0
+                        if row.move in raw_moves:
+                            target_prob = torch.tensor(
+                                raw_moves[row.move], requires_grad=True
+                            )
+                            loss = loss - torch.log(target_prob + 1e-8)
+                            loss.backward()
+                            optimizer.step()
+                except Exception:
+                    continue
 
     def predict(
         self, board: chess.Board, player_index: int = 0
