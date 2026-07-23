@@ -9,6 +9,8 @@ import torch.nn as nn
 import torch.optim as optim
 import tqdm
 from maia2 import inference
+from maia2.utils import board_to_tensor, get_all_possible_moves, mirror_move
+from torch.utils.data import DataLoader, Dataset
 
 
 class ChessModel(ABC):
@@ -68,6 +70,29 @@ class DescentModelWrapper(ChessModel):
         return policy_probs, root_value
 
 
+class PlayerTrainDataset(Dataset):
+    def __init__(self, train_df: pd.DataFrame, all_moves_dict: dict):
+        self.samples = []
+        for row in train_df.itertuples():
+            board = chess.Board(row.board)
+            target_move = row.move
+
+            if board.turn == chess.BLACK:
+                board = board.mirror()
+                target_move = mirror_move(target_move)
+
+            if target_move in all_moves_dict:
+                tensor_board = board_to_tensor(board)
+                move_idx = all_moves_dict[target_move]
+                self.samples.append((tensor_board, move_idx))
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+
 class PlayerStyleEmbedding(nn.Embedding):
     def __init__(self, elo_embeddings: nn.Embedding, n_players: int) -> None:
         total_embeddings = elo_embeddings.num_embeddings + n_players
@@ -104,6 +129,9 @@ class Maia2FT(ChessModel):
         self.prepared = inference.prepare()
         self.pruning_fn = pruning_fn
 
+        all_moves = get_all_possible_moves()
+        self.all_moves_dict = {move: i for i, move in enumerate(all_moves)}
+
         original_emb = getattr(
             self.model,
             "elo_embedding",
@@ -131,7 +159,7 @@ class Maia2FT(ChessModel):
         player_index: int,
         train_pos: pl.DataFrame,
         epochs: int = 3,
-        batch_size: int = 512,
+        batch_size: int = 256,
         lr: float = 1e-3,
     ):
         if len(train_pos) == 0:
@@ -140,28 +168,26 @@ class Maia2FT(ChessModel):
         virtual_elo_idx = self.max_maia_idx + 1 + player_index
 
         train_df = (
-            train_pos.rename({"fen": "board"})
-            .with_columns(
-                [
-                    pl.lit(virtual_elo_idx).alias("active_elo"),
-                    pl.lit(virtual_elo_idx).alias("opponent_elo"),
-                ]
-            )
-            .select(["board", "move", "active_elo", "opponent_elo"])
-            .to_pandas()
+            train_pos.rename({"fen": "board"}).select(["board", "move"]).to_pandas()
         )
+        dataset = PlayerTrainDataset(train_df, self.all_moves_dict)
+        if len(dataset) == 0:
+            return
+
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
         self.model.train()
         for param in self.model.parameters():
             param.requires_grad = False
-
         self.custom_emb.players_embeddings.weight.requires_grad = True
 
         optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
+        criterion = nn.CrossEntropyLoss()
 
-        total_steps = (len(train_df) // batch_size + 1) * epochs
+        device = next(self.model.parameters()).device
+
         train_pbar = tqdm.tqdm(
-            total=total_steps,
+            total=epochs * len(dataloader),
             desc=f"Fit Player {player_index}",
             leave=False,
             unit="batch",
@@ -171,28 +197,18 @@ class Maia2FT(ChessModel):
             running_loss = 0.0
             steps = 0
 
-            shuffled_df = train_df.sample(frac=1.0).reset_index(drop=True)
+            for boards, targets in dataloader:
+                boards = boards.to(device)
+                targets = targets.to(device)
 
-            for i in range(0, len(shuffled_df), batch_size):
-                batch_df = shuffled_df.iloc[i : i + batch_size]
+                elos_self = torch.tensor([virtual_elo_idx] * len(boards), device=device)
+                elos_oppo = torch.tensor([virtual_elo_idx] * len(boards), device=device)
+
                 optimizer.zero_grad()
 
-                output, _ = inference.inference_batch(
-                    batch_df,
-                    self.model,
-                    verbose=0,
-                    batch_size=len(batch_df),
-                    num_workers=0,
-                )
+                logits_maia, _, _ = self.model(boards, elos_self, elos_oppo)
 
-                elo_idx_tensor = torch.tensor(
-                    [virtual_elo_idx] * len(batch_df),
-                    device=self.custom_emb.players_embeddings.weight.device,
-                )
-                player_emb = self.custom_emb(elo_idx_tensor)
-
-                loss = 1e-4 * (player_emb**2).mean()
-
+                loss = criterion(logits_maia, targets)
                 loss.backward()
                 optimizer.step()
 
@@ -204,10 +220,9 @@ class Maia2FT(ChessModel):
                     {
                         "epoch": f"{epoch + 1}/{epochs}",
                         "loss": f"{loss_val:.4f}",
-                        "avg_loss": f"{running_loss / max(1, steps):.4f}",
+                        "avg_loss": f"{running_loss / steps:.4f}",
                     }
                 )
-
                 train_pbar.update(1)
 
         train_pbar.close()
