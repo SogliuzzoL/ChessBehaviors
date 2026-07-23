@@ -170,10 +170,10 @@ class Maia2FT(ChessModel):
         self,
         player_index: int,
         train_pos: pl.DataFrame,
-        epochs: int = 1,
-        batch_size: int = 256,
+        epochs: int = 2,
+        batch_size: int = 1024,
         lr: float = 3e-4,
-        l2_anchor_weight: float = 1e-2,
+        l2_anchor_weight: float = 1e-4,
     ):
         if len(train_pos) == 0:
             return
