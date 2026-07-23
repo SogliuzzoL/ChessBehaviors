@@ -7,6 +7,7 @@ import polars as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import tqdm
 from maia2 import inference
 
 
@@ -156,7 +157,7 @@ class Maia2FT(ChessModel):
 
         optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
 
-        for epoch in range(epochs):
+        for epoch in tqdm.tqdm(range(epochs)):
             for row in train_df.itertuples():
                 optimizer.zero_grad()
                 board = chess.Board(row.board)
