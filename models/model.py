@@ -155,19 +155,29 @@ class Maia2FT(ChessModel):
         self.custom_emb.players_embeddings.weight.requires_grad = True
 
         optimizer = optim.Adam([self.custom_emb.players_embeddings.weight], lr=lr)
-        criterion = nn.CrossEntropyLoss()
-
-        prepared_batch = self.prepared.prepare_batch(train_df)
 
         for epoch in range(epochs):
             optimizer.zero_grad()
-            output = self.model(prepared_batch)
-            logits = output.move_logits
-            targets = prepared_batch.move_targets
 
-            loss = criterion(logits, targets)
-            loss.backward()
-            optimizer.step()
+            batch_inputs = (
+                inference.prepare_batch(train_df, self.prepared)
+                if hasattr(inference, "prepare_batch")
+                else None
+            )
+
+            if batch_inputs is not None:
+                output = self.model(batch_inputs)
+                loss = (
+                    output.loss
+                    if hasattr(output, "loss")
+                    else nn.functional.cross_entropy(
+                        output.move_logits, batch_inputs.move_targets
+                    )
+                )
+                loss.backward()
+                optimizer.step()
+            else:
+                break
 
     def predict(
         self, board: chess.Board, player_index: int = 0
