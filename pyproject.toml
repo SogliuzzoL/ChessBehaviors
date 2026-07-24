@@ -9,6 +9,7 @@ dependencies = [
     "einops>=0.8.2",
     "gdown>=6.1.0",
     "maia2>=0.9",
+    "matplotlib>=3.11.1",
     "numpy>=2.4.4",
     "pandas>=3.0.3",
     "polars>=1.42.1",

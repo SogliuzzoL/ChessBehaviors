@@ -222,3 +222,5 @@ __marimo__/
 
 maia2*/
 test.py
+*.png
+*.pdf
