@@ -1,11 +1,10 @@
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
 
 import chess
 import numpy as np
 
-from models.model import ChessModel
+from models import ChessModel
 
 
 @dataclass
@@ -13,13 +12,13 @@ class TranspositionNode:
     v: float = 0.0
     c: float = 0.0
     r: int = 0
-    n: Dict[str, int] = field(default_factory=dict)
+    n: dict[str, int] = field(default_factory=dict)
 
 
 class DescentSearch:
     def __init__(self, model: ChessModel):
         self.model = model
-        self.T: Dict[str, TranspositionNode] = {}
+        self.T: dict[str, TranspositionNode] = {}
 
     def _get_terminal_gain(self, board: chess.Board) -> float:
         outcome = board.outcome()
@@ -29,19 +28,19 @@ class DescentSearch:
 
     def _get_child_node(
         self, board: chess.Board, move_uci: str
-    ) -> Tuple[str, TranspositionNode]:
+    ) -> tuple[str, TranspositionNode]:
         board.push_uci(move_uci)
         child_s = board.fen()
         board.pop()
         return child_s, self.T[child_s]
 
     def _select_best_action(
-        self, board: chess.Board, moves: List[str], dual: bool = False
+        self, board: chess.Board, moves: list[str], dual: bool = False
     ) -> str:
         s = board.fen()
         is_white = board.turn == chess.WHITE
 
-        def key_fn(move: str) -> Tuple[float, float, float]:
+        def key_fn(move: str) -> tuple[float, float, float]:
             _, child_node = self._get_child_node(board, move)
             n_val = float(self.T[s].n.get(move, 0))
             if dual:
@@ -50,7 +49,7 @@ class DescentSearch:
 
         return max(moves, key=key_fn) if is_white else min(moves, key=key_fn)
 
-    def _backup_resolution(self, board: chess.Board, moves: List[str]) -> int:
+    def _backup_resolution(self, board: chess.Board, moves: list[str]) -> int:
         s = board.fen()
         if abs(self.T[s].c) == 1.0:
             return 1
@@ -58,7 +57,7 @@ class DescentSearch:
         children_r = [self._get_child_node(board, m)[1].r for m in moves]
         return min(children_r) if children_r else 0
 
-    def _update_node_values(self, board: chess.Board, moves: List[str]) -> None:
+    def _update_node_values(self, board: chess.Board, moves: list[str]) -> None:
         s = board.fen()
         best_move = self._select_best_action(board, moves, dual=False)
         _, best_child = self._get_child_node(board, best_move)
@@ -116,7 +115,7 @@ class DescentSearch:
 
     def get_policy(
         self, board: chess.Board, temperature: float = 1.0
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         s = board.fen()
         if s not in self.T or not self.T[s].n:
             return {}
@@ -132,7 +131,7 @@ class DescentSearch:
 
     def search(
         self, board: chess.Board, max_iterations: int = 100, timeout: float = 2.0
-    ) -> Tuple[Dict[str, float], float]:
+    ) -> tuple[dict[str, float], float]:
         start_time = time.time()
         for _ in range(max_iterations):
             if (
