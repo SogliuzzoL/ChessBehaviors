@@ -53,13 +53,14 @@ class Maia2FineTuned(ChessModel):
         self,
         player_index: int,
         train_pos: pl.DataFrame,
+        test_pos: pl.DataFrame | None = None,
         epochs: int = 2,
         batch_size: int = 1024,
         lr: float = 3e-4,
         l2_anchor_weight: float = 1e-4,
-    ):
+    ) -> list[dict]:
         if len(train_pos) == 0:
-            return
+            return []
 
         virtual_elo_idx = self.max_maia_idx + 1 + player_index
 
@@ -69,7 +70,7 @@ class Maia2FineTuned(ChessModel):
 
         dataset = PlayerTrainDataset(train_df, self.all_moves_dict, self.elo_dict)
         if len(dataset) == 0:
-            return
+            return []
 
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
@@ -92,6 +93,9 @@ class Maia2FineTuned(ChessModel):
                 .clone()
             )
 
+        history = []
+        global_step = 0
+
         total_batches = epochs * len(dataloader)
         train_pbar = tqdm.tqdm(
             total=total_batches,
@@ -102,6 +106,8 @@ class Maia2FineTuned(ChessModel):
 
         for epoch in range(epochs):
             running_loss = 0.0
+            running_ce_loss = 0.0
+            running_anchor_loss = 0.0
             steps = 0
 
             for boards, targets in dataloader:
@@ -131,21 +137,99 @@ class Maia2FineTuned(ChessModel):
                 optimizer.step()
 
                 loss_val = total_loss.item()
+                ce_val = ce_loss.item()
+                anchor_val = anchor_loss.item()
+
                 running_loss += loss_val
+                running_ce_loss += ce_val
+                running_anchor_loss += anchor_val
+
                 steps += 1
+                global_step += 1
+
+                history.append(
+                    {
+                        "type": "batch",
+                        "player_index": player_index,
+                        "epoch": epoch + 1,
+                        "batch_step": steps,
+                        "global_step": global_step,
+                        "train_loss": loss_val,
+                        "ce_loss": ce_val,
+                        "anchor_loss": anchor_val,
+                    }
+                )
 
                 train_pbar.set_postfix(
                     {
                         "epoch": f"{epoch + 1}/{epochs}",
                         "loss": f"{loss_val:.4f}",
-                        "ce_loss": f"{ce_loss.item():.4f}",
+                        "ce_loss": f"{ce_val:.4f}",
                         "avg": f"{running_loss / steps:.4f}",
                     }
                 )
                 train_pbar.update(1)
 
+            epoch_log = {
+                "type": "epoch",
+                "player_index": player_index,
+                "epoch": epoch + 1,
+                "avg_train_loss": running_loss / steps,
+                "avg_ce_loss": running_ce_loss / steps,
+                "avg_anchor_loss": running_anchor_loss / steps,
+            }
+
+            if test_pos is not None and len(test_pos) > 0:
+                self.model.eval()
+                test_df = (
+                    test_pos.rename({"fen": "board"})
+                    .select(["board", "move"])
+                    .to_pandas()
+                )
+                val_dataset = PlayerTrainDataset(
+                    test_df, self.all_moves_dict, self.elo_dict
+                )
+
+                if len(val_dataset) > 0:
+                    val_loader = DataLoader(
+                        val_dataset, batch_size=batch_size, shuffle=False
+                    )
+                    val_loss, correct, total = 0.0, 0, 0
+
+                    with torch.no_grad():
+                        for v_boards, v_targets in val_loader:
+                            v_boards = v_boards.to(device)
+                            v_targets = v_targets.to(device)
+
+                            v_elos_self = torch.tensor(
+                                [virtual_elo_idx] * len(v_boards), device=device
+                            )
+                            v_elos_oppo = torch.tensor(
+                                [virtual_elo_idx] * len(v_boards), device=device
+                            )
+
+                            v_logits, _, _ = self.model(
+                                v_boards, v_elos_self, v_elos_oppo
+                            )
+
+                            v_ce = criterion(v_logits, v_targets)
+                            val_loss += v_ce.item()
+
+                            preds = v_logits.argmax(dim=-1)
+                            correct += (preds == v_targets).sum().item()
+                            total += len(v_targets)
+
+                    epoch_log["val_loss"] = val_loss / len(val_loader)
+                    epoch_log["val_acc"] = correct / total if total > 0 else 0.0
+
+                self.model.train()
+                self.custom_emb.players_embeddings.weight.requires_grad = True
+
+            history.append(epoch_log)
+
         train_pbar.close()
         self.model.eval()
+        return history
 
     def predict(
         self, board: chess.Board, player_index: int = 0

@@ -42,6 +42,7 @@ if __name__ == "__main__":
         player_preds = []
         correct_count = 0
         total_count = len(player_positions)
+        all_train_logs = []
 
         for fold_idx, test_games in enumerate(
             tqdm.tqdm(game_folds, desc=f"5-Fold CV {player_name}", leave=False)
@@ -52,7 +53,16 @@ if __name__ == "__main__":
             set_seed(SEED + fold_idx)
 
             maia2_ft_model.reset_player_embedding(player_index)
-            maia2_ft_model.fit_player(player_index, train_pos)
+            logs = maia2_ft_model.fit_player(player_index, train_pos, test_pos=test_pos)
+
+            for entry in logs:
+                entry["fold"] = fold_idx
+            all_train_logs.extend(logs)
+
+            logs_df = pd.DataFrame(all_train_logs)
+            logs_df.to_csv(
+                f"data/training_logs_ft_player_{player_index}.csv", index=False
+            )
 
             for row in tqdm.tqdm(
                 test_pos.iter_rows(named=True),
