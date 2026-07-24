@@ -54,7 +54,12 @@ if __name__ == "__main__":
 
             style_moe_model.reset_adapter()
             logs = style_moe_model.fit_player(
-                player_index, train_pos, epochs=10, batch_size=256, lr=1e-3
+                player_index,
+                train_pos,
+                test_pos=test_pos,
+                epochs=10,
+                batch_size=128,
+                lr=1e-3,
             )
 
             for entry in logs:
