@@ -110,19 +110,20 @@ class Maia2MoELoRA(ChessModel):
         self,
         player_index: int,
         train_pos: pl.DataFrame,
-        epochs: int = 2,
-        batch_size: int = 256,
+        test_pos: pl.DataFrame | None = None,
+        epochs: int = 10,
+        batch_size: int = 128,
         lr: float = 1e-3,
-    ):
+    ) -> list[dict]:
         if len(train_pos) == 0:
-            return
+            return []
 
         train_df = (
             train_pos.rename({"fen": "board"}).select(["board", "move"]).to_pandas()
         )
         dataset = PlayerTrainDataset(train_df, self.all_moves_dict, self.elo_dict)
         if len(dataset) == 0:
-            return
+            return []
 
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
@@ -134,26 +135,22 @@ class Maia2MoELoRA(ChessModel):
         for param in self.adapter.parameters():
             param.requires_grad = True
 
-        optimizer = optim.AdamW(self.adapter.parameters(), lr=lr, weight_decay=1e-4)
+        optimizer = optim.AdamW(self.adapter.parameters(), lr=lr, weight_decay=1e-2)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs * len(dataloader), eta_min=1e-5
+        )
         criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
         device = next(self.model.parameters()).device
 
-        total_batches = epochs * len(dataloader)
-        train_pbar = tqdm.tqdm(
-            total=total_batches,
-            desc=f"Fit MoE Player {player_index}",
-            leave=False,
-            unit="batch",
-        )
+        history = []
+        global_step = 0
 
         for epoch in range(epochs):
             running_loss = 0.0
             steps = 0
 
             for boards, targets in dataloader:
-                boards = boards.to(device)
-                targets = targets.to(device)
-
+                boards, targets = boards.to(device), targets.to(device)
                 elos_dummy = torch.tensor([0] * len(boards), device=device)
                 player_ids = torch.tensor([player_index] * len(boards), device=device)
 
@@ -173,21 +170,73 @@ class Maia2MoELoRA(ChessModel):
                 torch.nn.utils.clip_grad_norm_(self.adapter.parameters(), max_norm=1.0)
                 optimizer.step()
 
+                current_lr = scheduler.get_last_lr()[0]
+                scheduler.step()
+
                 loss_val = loss.item()
                 running_loss += loss_val
                 steps += 1
+                global_step += 1
 
-                train_pbar.set_postfix(
+                history.append(
                     {
-                        "epoch": f"{epoch + 1}/{epochs}",
-                        "loss": f"{loss_val:.4f}",
-                        "avg": f"{running_loss / steps:.4f}",
+                        "type": "batch",
+                        "player_index": player_index,
+                        "epoch": epoch + 1,
+                        "batch_step": steps,
+                        "global_step": global_step,
+                        "train_loss": loss_val,
+                        "lr": current_lr,
                     }
                 )
-                train_pbar.update(1)
 
-        train_pbar.close()
+            epoch_log = {
+                "type": "epoch",
+                "player_index": player_index,
+                "epoch": epoch + 1,
+                "avg_train_loss": running_loss / steps,
+                "lr": current_lr,
+            }
+
+            if test_pos is not None and len(test_pos) > 0:
+                self.adapter.eval()
+                val_loss, correct, total = 0.0, 0, 0
+                test_df = (
+                    test_pos.rename({"fen": "board"})
+                    .select(["board", "move"])
+                    .to_pandas()
+                )
+                val_dataset = PlayerTrainDataset(
+                    test_df, self.all_moves_dict, self.elo_dict
+                )
+                val_loader = DataLoader(
+                    val_dataset, batch_size=batch_size, shuffle=False
+                )
+
+                with torch.no_grad():
+                    for v_boards, v_targets in val_loader:
+                        v_boards, v_targets = v_boards.to(device), v_targets.to(device)
+                        v_elos = torch.tensor([0] * len(v_boards), device=device)
+                        v_pids = torch.tensor(
+                            [player_index] * len(v_boards), device=device
+                        )
+
+                        v_maia, v_hidden, _ = self.model(v_boards, v_elos, v_elos)
+                        v_final = v_maia + self.adapter(v_hidden, v_pids)
+
+                        val_loss += criterion(v_final, v_targets).item()
+                        preds = v_final.argmax(dim=-1)
+                        correct += (preds == v_targets).sum().item()
+                        total += len(v_targets)
+
+                epoch_log["val_loss"] = val_loss / len(val_loader)
+                epoch_log["val_acc"] = correct / total if total > 0 else 0.0
+                self.adapter.train()
+
+            history.append(epoch_log)
+
         self.adapter.eval()
+        return history
 
     def predict(
         self, board: chess.Board, player_index: int = 0
