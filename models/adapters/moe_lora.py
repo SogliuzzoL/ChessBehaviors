@@ -111,9 +111,9 @@ class Maia2MoELoRA(ChessModel):
         player_index: int,
         train_pos: pl.DataFrame,
         test_pos: pl.DataFrame | None = None,
-        epochs: int = 10,
-        batch_size: int = 128,
-        lr: float = 1e-3,
+        epochs: int = 20,
+        batch_size: int = 64,
+        lr: float = 1e-2,
     ) -> list[dict]:
         if len(train_pos) == 0:
             return []
