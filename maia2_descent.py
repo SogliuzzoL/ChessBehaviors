@@ -6,7 +6,7 @@ import polars as pl
 import tqdm
 from maia2 import model
 
-from models.model import DescentModelWrapper, Maia2
+from models import DescentModelWrapper, Maia2
 from utils.data import createPlayerDict, getPlayers
 
 logger = logging.getLogger(__name__)

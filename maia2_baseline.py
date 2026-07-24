@@ -6,7 +6,7 @@ import polars as pl
 import tqdm
 from maia2 import model
 
-from models.model import Maia2
+from models import Maia2
 from utils.data import createPlayerDict, getPlayers
 
 logging.basicConfig(level=logging.INFO)

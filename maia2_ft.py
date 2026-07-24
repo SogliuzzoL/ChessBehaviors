@@ -6,7 +6,7 @@ import polars as pl
 import tqdm
 from maia2 import model
 
-from models.model import Maia2FT
+from models import Maia2FineTuned
 from utils.data import createPlayerDict, getPlayers, set_seed, split_games_into_folds
 
 logging.basicConfig(level=logging.INFO)
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     players_dict = createPlayerDict(players)
     positions = pl.read_csv("data/positions.csv")
 
-    maia2_ft_model = Maia2FT(model=raw_maia_model, n_players=len(players_dict))
+    maia2_ft_model = Maia2FineTuned(model=raw_maia_model, n_players=len(players_dict))
 
     predictions = []
     accuracies = []

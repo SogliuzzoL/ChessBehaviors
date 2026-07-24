@@ -20,10 +20,9 @@ if __name__ == "__main__":
     accuracies = []
 
     for player_name, player_index in tqdm.tqdm(players_dict.items()):
-        player_df = (
-            positions_pl.filter(pl.col("player_index") == player_index)
-            .to_pandas()
-        )
+        player_df = positions_pl.filter(
+            pl.col("player_index") == player_index
+        ).to_pandas()
 
         total_count = len(player_df)
         if total_count == 0:
@@ -46,8 +45,7 @@ if __name__ == "__main__":
             total_fen_moves = len(moves)
 
             probs = {
-                move: round(cnt / total_fen_moves, 6)
-                for move, cnt in counts.items()
+                move: round(cnt / total_fen_moves, 6) for move, cnt in counts.items()
             }
             fen_marginal_probs[fen] = str(probs)
 

@@ -5,8 +5,8 @@ import pandas as pd
 import polars as pl
 import tqdm
 from maia2 import model
-from models.model import DescentModelWrapper, Maia2FT
 
+from models import DescentModelWrapper, Maia2FineTuned
 from utils.data import createPlayerDict, getPlayers, set_seed, split_games_into_folds
 from utils.pruning import nucleus_prune
 
@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
     prune_fn = lambda moves: nucleus_prune(moves, top_p=0.95)
 
-    maia2_ft_model = Maia2FT(
+    maia2_ft_model = Maia2FineTuned(
         model=raw_maia_model, n_players=len(players_dict), pruning_fn=prune_fn
     )
 
