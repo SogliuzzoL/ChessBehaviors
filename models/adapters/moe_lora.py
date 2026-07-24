@@ -145,6 +145,14 @@ class Maia2MoELoRA(ChessModel):
         history = []
         global_step = 0
 
+        total_batches = epochs * len(dataloader)
+        train_pbar = tqdm.tqdm(
+            total=total_batches,
+            desc=f"Fit MoE Player {player_index}",
+            leave=False,
+            unit="batch",
+        )
+
         for epoch in range(epochs):
             running_loss = 0.0
             steps = 0
@@ -189,6 +197,15 @@ class Maia2MoELoRA(ChessModel):
                         "lr": current_lr,
                     }
                 )
+
+                train_pbar.set_postfix(
+                    {
+                        "epoch": f"{epoch + 1}/{epochs}",
+                        "loss": f"{loss_val:.4f}",
+                        "avg": f"{running_loss / steps:.4f}",
+                    }
+                )
+                train_pbar.update(1)
 
             epoch_log = {
                 "type": "epoch",
@@ -235,6 +252,7 @@ class Maia2MoELoRA(ChessModel):
 
             history.append(epoch_log)
 
+        train_pbar.close()
         self.adapter.eval()
         return history
 
