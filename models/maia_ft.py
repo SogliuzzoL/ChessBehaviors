@@ -54,10 +54,10 @@ class Maia2FineTuned(ChessModel):
         player_index: int,
         train_pos: pl.DataFrame,
         test_pos: pl.DataFrame | None = None,
-        epochs: int = 2,
-        batch_size: int = 1024,
-        lr: float = 3e-4,
-        l2_anchor_weight: float = 1e-4,
+        epochs: int = 5,
+        batch_size: int = 64,
+        lr: float = 1e-2,
+        l2_anchor_weight: float = 1e-5,
     ) -> list[dict]:
         if len(train_pos) == 0:
             return []
@@ -81,6 +81,9 @@ class Maia2FineTuned(ChessModel):
 
         optimizer = optim.AdamW(
             [self.custom_emb.players_embeddings.weight], lr=lr, weight_decay=1e-4
+        )
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs * len(dataloader), eta_min=1e-4
         )
         criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
@@ -135,6 +138,7 @@ class Maia2FineTuned(ChessModel):
                     [self.custom_emb.players_embeddings.weight], max_norm=1.0
                 )
                 optimizer.step()
+                scheduler.step()
 
                 loss_val = total_loss.item()
                 ce_val = ce_loss.item()
@@ -157,6 +161,7 @@ class Maia2FineTuned(ChessModel):
                         "train_loss": loss_val,
                         "ce_loss": ce_val,
                         "anchor_loss": anchor_val,
+                        "lr": scheduler.get_last_lr()[0],
                     }
                 )
 
