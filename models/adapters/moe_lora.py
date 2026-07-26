@@ -82,12 +82,33 @@ class Maia2MoELoRA(ChessModel):
         self.all_moves_dict = {move: i for i, move in enumerate(all_moves)}
         self.elo_dict = create_elo_dict()
 
+        original_emb = getattr(
+            self.model,
+            "elo_embedding",
+            getattr(getattr(self.model, "net", None), "elo_embedding", None),
+        )
+        self.max_maia_idx = original_emb.num_embeddings - 1
+
+        net_model = getattr(self.model, "net", self.model)
+        self.extracted_hidden_v = None
+
+        def hook_fn(module, input_tensor, output_tensor):
+            self.extracted_hidden_v = output_tensor
+
+        if hasattr(net_model, "last_ln"):
+            net_model.last_ln.register_forward_hook(hook_fn)
+        else:
+            raise AttributeError(
+                "Impossible de localiser 'last_ln' dans l'architecture Maia-2."
+            )
+
         device = next(self.model.parameters()).device
 
         with torch.no_grad():
             dummy_b = board_to_tensor(chess.Board()).unsqueeze(0).to(device)
-            dummy_elo = torch.tensor([0], device=device)
-            logits, hidden_v, _ = self.model(dummy_b, dummy_elo, dummy_elo)
+            ref_elo = torch.tensor([self.max_maia_idx], device=device)
+            logits, _, _ = self.model(dummy_b, ref_elo, ref_elo)
+            hidden_v = self.extracted_hidden_v
 
         self.adapter = PlayerMoEAdapter(
             v_dim=hidden_v.size(-1),
@@ -159,15 +180,16 @@ class Maia2MoELoRA(ChessModel):
 
             for boards, targets in dataloader:
                 boards, targets = boards.to(device), targets.to(device)
-                elos_dummy = torch.tensor([0] * len(boards), device=device)
+                ref_elos = torch.tensor(
+                    [self.max_maia_idx] * len(boards), device=device
+                )
                 player_ids = torch.tensor([player_index] * len(boards), device=device)
 
                 optimizer.zero_grad()
 
                 with torch.no_grad():
-                    logits_maia, hidden_v, _ = self.model(
-                        boards, elos_dummy, elos_dummy
-                    )
+                    logits_maia, _, _ = self.model(boards, ref_elos, ref_elos)
+                    hidden_v = self.extracted_hidden_v
 
                 delta_logits = self.adapter(hidden_v, player_ids)
                 final_logits = logits_maia + delta_logits
@@ -233,12 +255,15 @@ class Maia2MoELoRA(ChessModel):
                 with torch.no_grad():
                     for v_boards, v_targets in val_loader:
                         v_boards, v_targets = v_boards.to(device), v_targets.to(device)
-                        v_elos = torch.tensor([0] * len(v_boards), device=device)
+                        v_elos = torch.tensor(
+                            [self.max_maia_idx] * len(v_boards), device=device
+                        )
                         v_pids = torch.tensor(
                             [player_index] * len(v_boards), device=device
                         )
 
-                        v_maia, v_hidden, _ = self.model(v_boards, v_elos, v_elos)
+                        v_maia, _, _ = self.model(v_boards, v_elos, v_elos)
+                        v_hidden = self.extracted_hidden_v
                         v_final = v_maia + self.adapter(v_hidden, v_pids)
 
                         val_loss += criterion(v_final, v_targets).item()
@@ -271,7 +296,7 @@ class Maia2MoELoRA(ChessModel):
             proc_board = chess.Board(fen)
 
         board_input = board_to_tensor(proc_board).unsqueeze(0).to(device)
-        elos_dummy = torch.tensor([0], device=device)
+        ref_elo = torch.tensor([self.max_maia_idx], device=device)
         player_ids = torch.tensor([player_index], device=device)
 
         legal_moves = torch.zeros(len(self.all_moves_dict), device=device)
@@ -286,9 +311,8 @@ class Maia2MoELoRA(ChessModel):
         self.model.eval()
         self.adapter.eval()
         with torch.no_grad():
-            logits_maia, hidden_v, logits_value = self.model(
-                board_input, elos_dummy, elos_dummy
-            )
+            logits_maia, _, logits_value = self.model(board_input, ref_elo, ref_elo)
+            hidden_v = self.extracted_hidden_v
             delta_logits = self.adapter(hidden_v, player_ids)
             final_logits = logits_maia + delta_logits
 
