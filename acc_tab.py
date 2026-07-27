@@ -1,0 +1,234 @@
+import csv
+from pathlib import Path
+
+# Configuration du dossier de sortie pour les tableaux LaTeX
+OUTPUT_DIR = Path("tables")
+
+# Configuration : Dictionnaire associant le nom du modèle au chemin du fichier CSV
+RESULTS_CONFIG = {
+    # Modèles Policy
+    "Maia-2 Baseline": "data/maia2_accuracies.csv",
+    "Maia-2 FT": "data/maia2_ft_accuracies.csv",
+    "Maia-2 Nucleus": "data/maia2_nucleus_accuracies.csv",
+    "Maia-2 MoE-LoRA": "data/maia2_moe_lora_accuracies.csv",
+    # Modèles Descent
+    "Maia-2 Descent": "data/maia2_descent_accuracies.csv",
+    "Maia-2 N. + Descent": "data/maia2_nucleus_descent_accuracies.csv",
+    "Maia-2 FT + N. + Descent": "data/maia2_ft_nucleus_descent_accuracies.csv",
+    "Maia-2 MoE-LoRA N. + Descent": (
+        "data/maia2_moe_lora_nucleus_descent_accuracies.csv"
+    ),
+    # Modèles MCTS
+    "Maia-2 MCTS": "data/maia2_mcts_accuracies.csv",
+    "Maia-2 N. + MCTS": "data/maia2_nucleus_mcts_accuracies.csv",
+    "Maia-2 FT + N. + MCTS": "data/maia2_ft_nucleus_mcts_accuracies.csv",
+    "Maia-2 MoE-LoRA N. + MCTS": ("data/maia2_moe_lora_nucleus_mcts_accuracies.csv"),
+}
+
+# Groupes logiques pour séparer les tableaux par paradigme (4 modèles par tableau)
+POLICY_MODELS = [
+    "Maia-2 Baseline",
+    "Maia-2 FT",
+    "Maia-2 Nucleus",
+    "Maia-2 MoE-LoRA",
+]
+
+DESCENT_MODELS = [
+    "Maia-2 Descent",
+    "Maia-2 N. + Descent",
+    "Maia-2 FT + N. + Descent",
+    "Maia-2 MoE-LoRA N. + Descent",
+]
+
+MCTS_MODELS = [
+    "Maia-2 MCTS",
+    "Maia-2 N. + MCTS",
+    "Maia-2 FT + N. + MCTS",
+    "Maia-2 MoE-LoRA N. + MCTS",
+]
+
+
+def load_accuracy_data_from_csv(
+    config: dict[str, str],
+) -> dict[str, dict[str, float]]:
+    """Charge les données d'accuracy depuis les fichiers CSV configurés."""
+    data = {}
+    for model_name, path_str in config.items():
+        path = Path(path_str)
+        data[model_name] = {}
+        if path.exists():
+            with open(path, mode="r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    player = row["player_name"].strip()
+                    accuracy = float(row["accuracy"])
+                    data[model_name][player] = accuracy
+        else:
+            print(f"Fichier introuvable ({path_str}), colonne laissée vide.")
+    return data
+
+
+def generate_summary_table(
+    data: dict[str, dict[str, float]],
+    caption: str = "Overall Move Accuracy summary across model variants.",
+    label: str = "tab:accuracy_summary",
+) -> str:
+    """Génère un tableau de synthèse compact avec tous les modèles en lignes."""
+    latex = []
+    latex.append("\\begin{table}[!htbp]")
+    latex.append("  \\centering")
+    latex.append(f"  \\caption{{{caption}}}")
+    latex.append(f"  \\label{{{label}}}")
+    latex.append("  \\begin{tabular}{lcc}")
+    latex.append("    \\toprule")
+    latex.append(
+        "    \\textbf{Model Variant} & \\textbf{Mean Accuracy (\\%)} &"
+        " \\textbf{Std Dev (\\%)} \\\\"
+    )
+    latex.append("    \\midrule")
+
+    for model_name, player_dict in data.items():
+        valid_vals = [
+            v
+            for k, v in player_dict.items()
+            if k.lower() not in ["average", "mean", "avg"]
+            and isinstance(v, (int, float))
+        ]
+
+        if valid_vals:
+            mean_val = sum(valid_vals) / len(valid_vals)
+            variance = sum((x - mean_val) ** 2 for x in valid_vals) / len(valid_vals)
+            std_val = variance**0.5
+
+            mean_str = f"{mean_val * 100:.2f}\\%"
+            std_str = f"\\pm {std_val * 100:.2f}\\%"
+            latex.append(f"    {model_name} & {mean_str} & {std_str} \\\\")
+        else:
+            latex.append(f"    {model_name} & -- & -- \\\\")
+
+    latex.append("    \\bottomrule")
+    latex.append("  \\end{tabular}")
+    latex.append("\\end{table}")
+
+    return "\n".join(latex)
+
+
+def generate_player_breakdown_table(
+    data: dict[str, dict[str, float]],
+    selected_models: list[str] = None,
+    caption: str = "Detailed move accuracy per player.",
+    label: str = "tab:move_accuracy_breakdown",
+) -> str:
+    """Génère un tableau détaillé pour un groupe spécifique de modèles."""
+    if not selected_models:
+        selected_models = list(data.keys())
+
+    models = [m for m in selected_models if m in data]
+
+    players = sorted(
+        {
+            player
+            for model_name in models
+            for player in data[model_name].keys()
+            if player.lower() not in ["average", "mean", "avg"]
+        }
+    )
+
+    col_spec = "l" + "c" * len(models)
+
+    latex = []
+    latex.append("\\begin{table}[!htbp]")
+    latex.append("  \\centering")
+    latex.append(f"  \\caption{{{caption}}}")
+    latex.append(f"  \\label{{{label}}}")
+    latex.append("  \\resizebox{\\linewidth}{!}{%")
+    latex.append(f"    \\begin{{tabular}}{{{col_spec}}}")
+    latex.append("      \\toprule")
+
+    header = "      \\textbf{Player}"
+    for model in models:
+        header += f" & \\textbf{{{model}}}"
+    header += " \\\\"
+    latex.append(header)
+    latex.append("      \\midrule")
+
+    for player in players:
+        row = f"      {player}"
+        for model in models:
+            acc = data[model].get(player, None)
+            if acc is not None:
+                row += f" & {acc * 100:.2f}\\%"
+            else:
+                row += " & --"
+        row += " \\\\"
+        latex.append(row)
+
+    latex.append("      \\midrule")
+
+    avg_row = "      \\textbf{Average}"
+    for model in models:
+        model_dict = data[model]
+        valid_vals = [
+            v
+            for k, v in model_dict.items()
+            if k.lower() not in ["average", "mean", "avg"]
+            and isinstance(v, (int, float))
+        ]
+        if valid_vals:
+            avg_val = sum(valid_vals) / len(valid_vals)
+            avg_row += f" & \\textbf{{{avg_val * 100:.2f}\\%}}"
+        else:
+            avg_row += " & --"
+
+    avg_row += " \\\\"
+    latex.append(avg_row)
+
+    latex.append("      \\bottomrule")
+    latex.append("    \\end{tabular}%")
+    latex.append("  }")
+    latex.append("\\end{table}")
+
+    return "\n".join(latex)
+
+
+if __name__ == "__main__":
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    accuracy_data = load_accuracy_data_from_csv(RESULTS_CONFIG)
+
+    # 1. Tableau de synthèse global (tous les 12 modèles en lignes)
+    summary_tex = generate_summary_table(accuracy_data)
+    with open(OUTPUT_DIR / "summary_accuracy_table.tex", "w", encoding="utf-8") as f:
+        f.write(summary_tex)
+
+    # 2. Tableau détaillé Policy (4 modèles)
+    policy_tex = generate_player_breakdown_table(
+        accuracy_data,
+        selected_models=POLICY_MODELS,
+        caption="Move Accuracy for Direct Policy Variants.",
+        label="tab:accuracy_policy",
+    )
+    with open(OUTPUT_DIR / "policy_accuracy_table.tex", "w", encoding="utf-8") as f:
+        f.write(policy_tex)
+
+    # 3. Tableau détaillé Descent (4 modèles)
+    descent_tex = generate_player_breakdown_table(
+        accuracy_data,
+        selected_models=DESCENT_MODELS,
+        caption="Move Accuracy for Descent Search Variants.",
+        label="tab:accuracy_descent",
+    )
+    with open(OUTPUT_DIR / "descent_accuracy_table.tex", "w", encoding="utf-8") as f:
+        f.write(descent_tex)
+
+    # 4. Tableau détaillé MCTS (4 modèles)
+    mcts_tex = generate_player_breakdown_table(
+        accuracy_data,
+        selected_models=MCTS_MODELS,
+        caption="Move Accuracy for MCTS Search Variants.",
+        label="tab:accuracy_mcts",
+    )
+    with open(OUTPUT_DIR / "mcts_accuracy_table.tex", "w", encoding="utf-8") as f:
+        f.write(mcts_tex)
+
+    print(f"Tous les fichiers .tex ont été enregistrés dans le dossier '{OUTPUT_DIR}'.")
