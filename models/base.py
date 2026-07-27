@@ -59,3 +59,26 @@ class DescentModelWrapper(ChessModel):
             board, max_iterations=self.max_iterations, timeout=self.timeout
         )
         return policy_probs, root_value
+
+
+class MCTSModelWrapper(ChessModel):
+    def __init__(
+        self,
+        base_model: ChessModel,
+        max_iterations: int = 50,
+        timeout: float = 1.0,
+        cpuct: float = 1.5,
+    ):
+        self.base_model = base_model
+        self.max_iterations = max_iterations
+        self.timeout = timeout
+        self.cpuct = cpuct
+
+    def predict(self, board: chess.Board) -> tuple[dict[str, float], float]:
+        from search.mcts import MCTSSearch
+
+        search_engine = MCTSSearch(model=self.base_model, cpuct=self.cpuct)
+        policy_probs, root_value = search_engine.search(
+            board, max_iterations=self.max_iterations, timeout=self.timeout
+        )
+        return policy_probs, root_value
