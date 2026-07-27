@@ -14,9 +14,9 @@ RESULTS_CONFIG = {
     # Modèles Descent
     "Maia-2 Descent": "data/maia2_descent_accuracies.csv",
     "Maia-2 N. + Descent": "data/maia2_nucleus_descent_accuracies.csv",
-    "Maia-2 FT + N. + Descent": "data/maia2_ft_nucleus_descent_accuracies.csv",
+    "Maia-2 FT + N. + Descent": "data/maia2_ft_nucleus_descent_50_accuracies.csv",
     "Maia-2 MoE-LoRA N. + Descent": (
-        "data/maia2_moe_lora_nucleus_descent_accuracies.csv"
+        "data/maia2_moe_lora_nucleus_descent_50_accuracies.csv"
     ),
     # Modèles MCTS
     "Maia-2 MCTS": "data/maia2_mcts_accuracies.csv",
@@ -73,7 +73,23 @@ def generate_summary_table(
     caption: str = "Overall Move Accuracy summary across model variants.",
     label: str = "tab:accuracy_summary",
 ) -> str:
-    """Génère un tableau de synthèse compact avec tous les modèles en lignes."""
+    """Génère un tableau de synthèse compact en mettant en gras la meilleure moyenne globale."""
+    model_stats = {}
+    for model_name, player_dict in data.items():
+        valid_vals = [
+            v
+            for k, v in player_dict.items()
+            if k.lower() not in ["average", "mean", "avg"]
+            and isinstance(v, (int, float))
+        ]
+        if valid_vals:
+            mean_val = sum(valid_vals) / len(valid_vals)
+            variance = sum((x - mean_val) ** 2 for x in valid_vals) / len(valid_vals)
+            std_val = variance**0.5
+            model_stats[model_name] = (mean_val, std_val)
+
+    best_mean = max(stats[0] for stats in model_stats.values()) if model_stats else None
+
     latex = []
     latex.append("\\begin{table}[!htbp]")
     latex.append("  \\centering")
@@ -87,21 +103,16 @@ def generate_summary_table(
     )
     latex.append("    \\midrule")
 
-    for model_name, player_dict in data.items():
-        valid_vals = [
-            v
-            for k, v in player_dict.items()
-            if k.lower() not in ["average", "mean", "avg"]
-            and isinstance(v, (int, float))
-        ]
-
-        if valid_vals:
-            mean_val = sum(valid_vals) / len(valid_vals)
-            variance = sum((x - mean_val) ** 2 for x in valid_vals) / len(valid_vals)
-            std_val = variance**0.5
-
+    for model_name in data.keys():
+        if model_name in model_stats:
+            mean_val, std_val = model_stats[model_name]
             mean_str = f"{mean_val * 100:.2f}\\%"
             std_str = f"\\pm {std_val * 100:.2f}\\%"
+
+            if best_mean is not None and abs(mean_val - best_mean) < 1e-7:
+                mean_str = f"\\textbf{{{mean_str}}}"
+                std_str = f"\\textbf{{{std_str}}}"
+
             latex.append(f"    {model_name} & {mean_str} & {std_str} \\\\")
         else:
             latex.append(f"    {model_name} & -- & -- \\\\")
@@ -119,7 +130,7 @@ def generate_player_breakdown_table(
     caption: str = "Detailed move accuracy per player.",
     label: str = "tab:move_accuracy_breakdown",
 ) -> str:
-    """Génère un tableau détaillé pour un groupe spécifique de modèles."""
+    """Génère un tableau détaillé en mettant en gras la meilleure précision par ligne."""
     if not selected_models:
         selected_models = list(data.keys())
 
@@ -152,12 +163,23 @@ def generate_player_breakdown_table(
     latex.append(header)
     latex.append("      \\midrule")
 
+    # Traitement par joueur avec identification du maximum de la ligne
     for player in players:
+        player_accs = {
+            model: data[model].get(player)
+            for model in models
+            if data[model].get(player) is not None
+        }
+        max_acc = max(player_accs.values()) if player_accs else None
+
         row = f"      {player}"
         for model in models:
             acc = data[model].get(player, None)
             if acc is not None:
-                row += f" & {acc * 100:.2f}\\%"
+                val_str = f"{acc * 100:.2f}\\%"
+                if max_acc is not None and abs(acc - max_acc) < 1e-7:
+                    val_str = f"\\textbf{{{val_str}}}"
+                row += f" & {val_str}"
             else:
                 row += " & --"
         row += " \\\\"
@@ -165,7 +187,8 @@ def generate_player_breakdown_table(
 
     latex.append("      \\midrule")
 
-    avg_row = "      \\textbf{Average}"
+    # Traitement de la ligne Moyenne avec identification de la meilleure moyenne
+    avg_vals = {}
     for model in models:
         model_dict = data[model]
         valid_vals = [
@@ -175,8 +198,18 @@ def generate_player_breakdown_table(
             and isinstance(v, (int, float))
         ]
         if valid_vals:
-            avg_val = sum(valid_vals) / len(valid_vals)
-            avg_row += f" & \\textbf{{{avg_val * 100:.2f}\\%}}"
+            avg_vals[model] = sum(valid_vals) / len(valid_vals)
+
+    max_avg = max(avg_vals.values()) if avg_vals else None
+
+    avg_row = "      \\textbf{Average}"
+    for model in models:
+        if model in avg_vals:
+            avg_val = avg_vals[model]
+            val_str = f"{avg_val * 100:.2f}\\%"
+            if max_avg is not None and abs(avg_val - max_avg) < 1e-7:
+                val_str = f"\\textbf{{{val_str}}}"
+            avg_row += f" & {val_str}"
         else:
             avg_row += " & --"
 
@@ -196,7 +229,7 @@ if __name__ == "__main__":
 
     accuracy_data = load_accuracy_data_from_csv(RESULTS_CONFIG)
 
-    # 1. Tableau de synthèse global (tous les 12 modèles en lignes)
+    # 1. Tableau de synthèse global (tous les modèles)
     summary_tex = generate_summary_table(accuracy_data)
     with open(OUTPUT_DIR / "summary_accuracy_table.tex", "w", encoding="utf-8") as f:
         f.write(summary_tex)
@@ -231,4 +264,6 @@ if __name__ == "__main__":
     with open(OUTPUT_DIR / "mcts_accuracy_table.tex", "w", encoding="utf-8") as f:
         f.write(mcts_tex)
 
-    print(f"Tous les fichiers .tex ont été enregistrés dans le dossier '{OUTPUT_DIR}'.")
+    print(
+        f"Tous les fichiers .tex ont été enregistrés dans le dossier '{OUTPUT_DIR}' avec les meilleures précisions mises en gras."
+    )
