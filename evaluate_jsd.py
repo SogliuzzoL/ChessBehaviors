@@ -37,16 +37,14 @@ PREDICTION_FILES = {
 
 
 def compute_kl_divergence(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
-    """Calcule la divergence de Kullback-Leibler KL(P || Q)."""
     p = np.clip(p, eps, 1.0)
     q = np.clip(q, eps, 1.0)
-    return float(np.sum(p * np.log(p / q)))
+    return float(np.sum(p * np.log2(p / q)))
 
 
 def compute_jensen_shannon_divergence(
     p_dict: dict[str, float], q_dict: dict[str, float]
 ) -> float:
-    """Calcule la divergence de Jensen-Shannon entre deux distributions de probabilités."""
     all_moves = list(set(p_dict.keys()).union(set(q_dict.keys())))
     if not all_moves:
         return 0.0
@@ -67,12 +65,10 @@ def compute_jensen_shannon_divergence(
     kl_p_m = compute_kl_divergence(p_vals, m_vals)
     kl_q_m = compute_kl_divergence(q_vals, m_vals)
 
-    jsd = 0.5 * kl_p_m + 0.5 * kl_q_m
-    return max(0.0, jsd)
+    return max(0.0, 0.5 * kl_p_m + 0.5 * kl_q_m)
 
 
 def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, int]):
-    """Calcule la JSD moyenne par joueur en mode Lazy Polars."""
     path = Path(csv_path)
     if not path.exists():
         logger.warning(
@@ -81,15 +77,14 @@ def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, i
         return
 
     logger.info(f"Évaluation JSD (Lazy Mode) pour le modèle : {model_name}")
-    lazy_df = pl.scan_csv(csv_path)
+
+    lazy_df = pl.scan_csv(csv_path).select(
+        ["player_index", "fen", "move", "moves_probs"]
+    )
     results = []
 
     for player_name, player_index in tqdm.tqdm(players_dict.items(), desc=model_name):
-        player_data = (
-            lazy_df.filter(pl.col("player_index") == player_index)
-            .select(["fen", "move", "moves_probs"])
-            .collect()
-        )
+        player_data = lazy_df.filter(pl.col("player_index") == player_index).collect()
 
         if len(player_data) == 0:
             del player_data
@@ -120,10 +115,8 @@ def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, i
 
         jsd_values = []
         for fen, moves in fen_groups.items():
-            counts = Counter(moves)
             total_fen_moves = len(moves)
-
-            p_data = {move: cnt / total_fen_moves for move, cnt in counts.items()}
+            p_data = {m: cnt / total_fen_moves for m, cnt in Counter(moves).items()}
             p_model = fen_model_probs.get(fen, {})
 
             jsd = compute_jensen_shannon_divergence(p_data, p_model)

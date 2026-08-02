@@ -107,7 +107,7 @@ def generate_summary_table(
         if model_name in model_stats:
             mean_val, std_val = model_stats[model_name]
             mean_str = f"{mean_val * 100:.2f}\\%"
-            std_str = f"\\pm {std_val * 100:.2f}\\%"
+            std_str = f"$\\pm$ {std_val * 100:.2f}\\%"
 
             if best_mean is not None and abs(mean_val - best_mean) < 1e-7:
                 mean_str = f"\\textbf{{{mean_str}}}"
