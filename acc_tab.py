@@ -12,8 +12,8 @@ RESULTS_CONFIG = {
     "Maia-2 Nucleus": "data/maia2_nucleus_accuracies.csv",
     "Maia-2 MoE-LoRA": "data/maia2_moe_lora_accuracies.csv",
     # Modèles Descent
-    "Maia-2 Descent": "data/maia2_descent_accuracies.csv",
-    "Maia-2 N. + Descent": "data/maia2_nucleus_descent_accuracies.csv",
+    "Maia-2 Descent": "data/maia2_descent_50_accuracies.csv",
+    "Maia-2 N. + Descent": "data/maia2_nucleus_descent_50_accuracies.csv",
     "Maia-2 FT + N. + Descent": "data/maia2_ft_nucleus_descent_50_accuracies.csv",
     "Maia-2 MoE-LoRA N. + Descent": (
         "data/maia2_moe_lora_nucleus_descent_50_accuracies.csv"
