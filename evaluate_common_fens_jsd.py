@@ -2,6 +2,7 @@ import ast
 import gc
 import logging
 import math
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -35,10 +36,15 @@ PREDICTION_FILES = {
 }
 
 
-def compute_jensen_shannon_divergence_fast(
-    p_dict: dict[str, float], q_dict: dict[str, float], eps: float = 1e-12
+def compute_kl_divergence(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
+    p = np.clip(p, eps, 1.0)
+    q = np.clip(q, eps, 1.0)
+    return float(np.sum(p * np.log2(p / q)))
+
+
+def compute_jensen_shannon_divergence(
+    p_dict: dict[str, float], q_dict: dict[str, float]
 ) -> float:
-    """Calcul optimisé de la JSD vectorisé sur NumPy."""
     all_moves = list(set(p_dict.keys()).union(set(q_dict.keys())))
     if not all_moves:
         return 0.0
@@ -46,7 +52,9 @@ def compute_jensen_shannon_divergence_fast(
     p_vals = np.array([p_dict.get(m, 0.0) for m in all_moves], dtype=np.float64)
     q_vals = np.array([q_dict.get(m, 0.0) for m in all_moves], dtype=np.float64)
 
-    sum_p, sum_q = np.sum(p_vals), np.sum(q_vals)
+    sum_p = np.sum(p_vals)
+    sum_q = np.sum(q_vals)
+
     if sum_p > 0:
         p_vals /= sum_p
     if sum_q > 0:
@@ -54,26 +62,10 @@ def compute_jensen_shannon_divergence_fast(
 
     m_vals = 0.5 * (p_vals + q_vals)
 
-    p_clipped = np.clip(p_vals, eps, 1.0)
-    q_clipped = np.clip(q_vals, eps, 1.0)
-    m_clipped = np.clip(m_vals, eps, 1.0)
-
-    kl_p_m = float(np.sum(p_vals * np.log2(p_clipped / m_clipped)))
-    kl_q_m = float(np.sum(q_vals * np.log2(q_clipped / m_clipped)))
+    kl_p_m = compute_kl_divergence(p_vals, m_vals)
+    kl_q_m = compute_kl_divergence(q_vals, m_vals)
 
     return max(0.0, 0.5 * kl_p_m + 0.5 * kl_q_m)
-
-
-def parse_probs(raw_probs):
-    """Conversion rapide de la chaîne de caractères ou du dictionnaire."""
-    if isinstance(raw_probs, str):
-        try:
-            return ast.literal_eval(raw_probs)
-        except Exception:
-            return {}
-    elif isinstance(raw_probs, dict):
-        return raw_probs
-    return {}
 
 
 def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, int]):
@@ -84,58 +76,78 @@ def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, i
         )
         return
 
-    logger.info(f"Évaluation JSD (Optimisée) pour le modèle : {model_name}")
+    logger.info(f"Évaluation JSD (Lazy Mode) pour le modèle : {model_name}")
 
-    lazy_df = pl.scan_csv(csv_path)
+    valid_player_indices = set(players_dict.values())
+    lazy_df = pl.scan_csv(csv_path).filter(
+        pl.col("player_index").is_in(valid_player_indices)
+    )
+
+    # 1. Identification des FEN communes à TOUS les joueurs
+    logger.info("Recherche des FEN communes à tous les joueurs...")
+    common_fens_df = (
+        lazy_df.select(["player_index", "fen"])
+        .unique()
+        .group_by("fen")
+        .agg(pl.count("player_index").alias("player_count"))
+        .filter(pl.col("player_count") == len(valid_player_indices))
+        .collect()
+    )
+
+    common_fens = set(common_fens_df["fen"].to_list())
+    logger.info(f"Nombre de FEN communes trouvées : {len(common_fens)}")
+
+    if not common_fens:
+        logger.warning("Aucune FEN commune trouvée entre les joueurs.")
+        return
+
+    # 2. Filtrage global sur les FEN communes
+    filtered_lazy_df = lazy_df.filter(pl.col("fen").is_in(common_fens)).select(
+        ["player_index", "fen", "move", "moves_probs"]
+    )
+
     results = []
 
     for player_name, player_index in tqdm.tqdm(players_dict.items(), desc=model_name):
-        # 1. Aggrégation native Polars pour compter les coups réels par FEN
-        player_counts_df = (
-            lazy_df.filter(pl.col("player_index") == player_index)
-            .group_by(["fen", "move"])
-            .agg(pl.len().alias("count"))
-            .collect()
-        )
+        player_data = filtered_lazy_df.filter(
+            pl.col("player_index") == player_index
+        ).collect()
 
-        if len(player_counts_df) == 0:
+        if len(player_data) == 0:
+            del player_data
+            gc.collect()
             continue
 
-        # Reconstitution rapide des distributions réelles P(data)
-        fen_real_probs: dict[str, dict[str, float]] = {}
-        fen_totals: dict[str, int] = {}
+        fen_groups: dict[str, list[str]] = {}
+        fen_model_probs: dict[str, dict[str, float]] = {}
 
-        for row in player_counts_df.iter_rows(named=True):
-            fen, move, cnt = row["fen"], row["move"], row["count"]
-            fen_totals[fen] = fen_totals.get(fen, 0) + cnt
-            if fen not in fen_real_probs:
-                fen_real_probs[fen] = {}
-            fen_real_probs[fen][move] = cnt
+        for row in player_data.iter_rows(named=True):
+            fen = row["fen"]
+            target_move = row["move"]
 
-        # Normalisation relative
-        for fen, moves in fen_real_probs.items():
-            tot = fen_totals[fen]
-            for m in moves:
-                moves[m] /= tot
+            if fen not in fen_groups:
+                fen_groups[fen] = []
+                raw_probs = row["moves_probs"]
+                if isinstance(raw_probs, str):
+                    try:
+                        fen_model_probs[fen] = ast.literal_eval(raw_probs)
+                    except Exception:
+                        fen_model_probs[fen] = {}
+                elif isinstance(raw_probs, dict):
+                    fen_model_probs[fen] = raw_probs
+                else:
+                    fen_model_probs[fen] = {}
 
-        # 2. Récupération unique des prédictions Q(model) par FEN
-        model_probs_df = (
-            lazy_df.filter(pl.col("player_index") == player_index)
-            .select(["fen", "moves_probs"])
-            .unique(subset=["fen"])
-            .collect()
-        )
+            fen_groups[fen].append(target_move)
 
-        fen_model_probs = {
-            row["fen"]: parse_probs(row["moves_probs"])
-            for row in model_probs_df.iter_rows(named=True)
-        }
+        jsd_values = []
+        for fen, moves in fen_groups.items():
+            total_fen_moves = len(moves)
+            p_data = {m: cnt / total_fen_moves for m, cnt in Counter(moves).items()}
+            p_model = fen_model_probs.get(fen, {})
 
-        # 3. Calcul rapide de la JSD
-        jsd_values = [
-            compute_jensen_shannon_divergence_fast(p_real, fen_model_probs.get(fen, {}))
-            for fen, p_real in fen_real_probs.items()
-        ]
+            jsd = compute_jensen_shannon_divergence(p_data, p_model)
+            jsd_values.append(jsd)
 
         mean_jsd = sum(jsd_values) / len(jsd_values) if jsd_values else 0.0
 
@@ -149,11 +161,12 @@ def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, i
             }
         )
 
-        del player_counts_df, model_probs_df, fen_real_probs, fen_model_probs
+        del player_data
         gc.collect()
 
     if results:
         output_df = pl.DataFrame(results)
+
         clean_name = (
             model_name.lower()
             .replace(" ", "_")
@@ -161,7 +174,7 @@ def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, i
             .replace(".", "")
             .replace("+", "")
         )
-        out_file = f"data/{clean_name}_jsd.csv"
+        out_file = f"data/{clean_name}_common_fens_jsd.csv"
         output_df.write_csv(out_file)
         logger.info(f"Résultats JSD enregistrés dans : {out_file}")
 

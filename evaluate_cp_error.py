@@ -47,7 +47,7 @@ def get_position_and_move_cpl(
     move_uci: str,
     depth: int = SEARCH_DEPTH,
 ) -> float:
-    """Calcule le Centipawn Loss d'un coup donné à partir d'une FEN."""
+    """Calcule le Centipawn Loss d'un coup donné à partir d'une FEN avec mise en cache."""
     cache_key = (fen, move_uci)
     if cache_key in cpl_cache:
         return cpl_cache[cache_key]
@@ -65,7 +65,6 @@ def get_position_and_move_cpl(
     score_after = (
         info_after["score"].pov(not board.turn).score(mate_score=MATE_SCORE_CAP)
     )
-    board.pop()
 
     cpl = max(0.0, float(score_best - score_after))
     cpl_cache[cache_key] = cpl
@@ -78,7 +77,7 @@ def evaluate_model_cp_error(
     players_dict: dict[str, int],
     engine: chess.engine.SimpleEngine,
 ):
-    """Calcule la CP Error par joueur en mode Lazy Polars."""
+    """Calcule la CP Error par joueur de manière optimisée."""
     path = Path(csv_path)
     if not path.exists():
         logger.warning(
@@ -86,7 +85,7 @@ def evaluate_model_cp_error(
         )
         return
 
-    logger.info(f"Évaluation du modèle (Lazy Mode) : {model_name}")
+    logger.info(f"Évaluation du modèle (Optimisée) : {model_name}")
     lazy_df = pl.scan_csv(csv_path)
     results = []
 
@@ -103,19 +102,17 @@ def evaluate_model_cp_error(
             gc.collect()
             continue
 
+        # Extraction vectorisée des colonnes pour éviter overhead de iter_rows
+        fens = player_data["fen"].to_list()
+        player_moves = player_data["move"].to_list()
+        model_moves = player_data["predicted_move"].to_list()
+
         player_cpl_sum = 0.0
         model_cpl_sum = 0.0
 
-        for row in player_data.iter_rows(named=True):
-            fen = row["fen"]
-            player_move = row["move"]
-            model_move = row["predicted_move"]
-
-            player_cpl = get_position_and_move_cpl(engine, fen, player_move)
-            model_cpl = get_position_and_move_cpl(engine, fen, model_move)
-
-            player_cpl_sum += player_cpl
-            model_cpl_sum += model_cpl
+        for fen, p_move, m_move in zip(fens, player_moves, model_moves):
+            player_cpl_sum += get_position_and_move_cpl(engine, fen, p_move)
+            model_cpl_sum += get_position_and_move_cpl(engine, fen, m_move)
 
         mean_cpl_player = player_cpl_sum / total_positions
         mean_cpl_model = model_cpl_sum / total_positions
@@ -131,7 +128,7 @@ def evaluate_model_cp_error(
             }
         )
 
-        del player_data
+        del player_data, fens, player_moves, model_moves
         gc.collect()
 
     if results:
