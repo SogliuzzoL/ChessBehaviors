@@ -1,5 +1,12 @@
+"""
+Main evaluation script for computing stylistic divergence (AE + cuML UMAP + JSD)
+across model variants and historical world chess champions.
+"""
+
 import gc
 import logging
+import os
+import random
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +14,7 @@ import polars as pl
 import torch
 import tqdm
 
-from models.style import evaluate_style_pipeline
+from models.style import GlobalStyleSpace, evaluate_style_with_space
 from utils.data import createPlayerDict, getPlayers
 from utils.transitions import get_transition_vector
 
@@ -36,20 +43,98 @@ PREDICTION_FILES = {
 }
 
 
-def evaluate_model_style(model_name: str, csv_path: str, players_dict: dict[str, int]):
+def set_seed(seed: int = 42) -> None:
+    """
+    Enforces global determinism across Python, NumPy, PyTorch, and CUDA runtime.
+    """
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def build_global_reference_space(
+    positions_file: str,
+    players_dict: dict[str, int],
+    device: torch.device,
+    seed: int = 42,
+) -> GlobalStyleSpace:
+    """
+    Extracts all ground-truth human transitions across targeted champions and
+    fits the universal GlobalStyleSpace (AutoEncoder + cuML UMAP).
+    """
+    logger.info(
+        "Loading ground-truth player positions for reference manifold construction..."
+    )
+    lazy_pos = pl.scan_csv(positions_file)
+
+    ref_vecs = []
+    player_pbar = tqdm.tqdm(
+        players_dict.items(),
+        desc="Building Global Reference Space (Extracting)",
+        unit="player",
+    )
+
+    for player_name, player_index in player_pbar:
+        player_pbar.set_postfix({"player": player_name})
+        player_pos = (
+            lazy_pos.filter(pl.col("player_index") == player_index)
+            .select(["fen", "move"])
+            .collect()
+        )
+
+        for row in player_pos.iter_rows(named=True):
+            vec = get_transition_vector(row["fen"], row["move"])
+            if vec is not None:
+                ref_vecs.append(vec)
+
+        del player_pos
+        gc.collect()
+
+    ref_arr = np.array(ref_vecs, dtype=np.float32)
+    logger.info(f"Successfully extracted {len(ref_arr)} reference transitions.")
+
+    global_space = GlobalStyleSpace.fit_from_vectors(
+        ref_arr, ae_epochs=10, device=device, seed=seed
+    )
+    del ref_vecs, ref_arr
+    gc.collect()
+
+    return global_space
+
+
+def evaluate_model_style(
+    model_name: str,
+    csv_path: str,
+    players_dict: dict[str, int],
+    global_space: GlobalStyleSpace,
+) -> None:
+    """
+    Evaluates stylistic alignment for a specific model variant across all players
+    within the pre-fitted global reference space.
+    """
     path = Path(csv_path)
     if not path.exists():
-        logger.warning(
-            f"Fichier de prédictions introuvable : {csv_path}, passage au suivant."
-        )
+        logger.warning(f"Prediction file not found: {csv_path}. Skipping evaluation.")
         return
 
-    logger.info(f"Évaluation du style (AE + cuML UMAP + JSD) : {model_name}")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Evaluating stylistic divergence for model: {model_name}")
     lazy_df = pl.scan_csv(csv_path)
 
     results = []
-    for player_name, player_index in tqdm.tqdm(players_dict.items(), desc=model_name):
+    player_pbar = tqdm.tqdm(
+        players_dict.items(),
+        desc=f"Evaluating {model_name}",
+        unit="player",
+    )
+
+    for player_name, player_index in player_pbar:
+        player_pbar.set_postfix({"current_player": player_name})
+
         player_data = (
             lazy_df.filter(pl.col("player_index") == player_index)
             .select(["fen", "move", "predicted_move"])
@@ -68,7 +153,15 @@ def evaluate_model_style(model_name: str, csv_path: str, players_dict: dict[str,
         p_vecs = []
         m_vecs = []
 
-        for fen, p_move, m_move in zip(fens, player_moves, model_moves):
+        encoding_pbar = tqdm.tqdm(
+            zip(fens, player_moves, model_moves),
+            total=len(fens),
+            desc=f"  -> Processing transitions [{player_name}]",
+            leave=False,
+            unit="pos",
+        )
+
+        for fen, p_move, m_move in encoding_pbar:
             p_vec = get_transition_vector(fen, p_move)
             m_vec = get_transition_vector(fen, m_move)
 
@@ -84,8 +177,8 @@ def evaluate_model_style(model_name: str, csv_path: str, players_dict: dict[str,
         p_arr = np.array(p_vecs, dtype=np.float32)
         m_arr = np.array(m_vecs, dtype=np.float32)
 
-        # Calcul des métriques de style via le pipeline
-        metrics = evaluate_style_pipeline(p_arr, m_arr, device=device)
+        # Compute stylistic divergence metrics within the global space
+        metrics = evaluate_style_with_space(global_space, p_arr, m_arr)
 
         results.append(
             {
@@ -94,6 +187,13 @@ def evaluate_model_style(model_name: str, csv_path: str, players_dict: dict[str,
                 "num_positions": len(p_vecs),
                 "style_jsd": metrics["style_jsd"],
                 "style_jsd_distance": metrics["style_jsd_distance"],
+            }
+        )
+
+        player_pbar.set_postfix(
+            {
+                "latest_JSD": f"{metrics['style_jsd']:.4f}",
+                "positions": len(p_vecs),
             }
         )
 
@@ -111,12 +211,29 @@ def evaluate_model_style(model_name: str, csv_path: str, players_dict: dict[str,
         )
         out_file = f"data/{clean_name}_style.csv"
         output_df.write_csv(out_file)
-        logger.info(f"Résultats de style enregistrés dans : {out_file}")
+        logger.info(f"Stylistic evaluation results saved to: {out_file}")
 
 
 if __name__ == "__main__":
+    GLOBAL_SEED = 42
+    set_seed(GLOBAL_SEED)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     players = getPlayers("data/metadata.csv")
     players_dict = createPlayerDict(players)
 
-    for model_name, path_str in PREDICTION_FILES.items():
-        evaluate_model_style(model_name, path_str, players_dict)
+    # 1. Construct the invariant global reference space
+    global_space = build_global_reference_space(
+        "data/positions.csv", players_dict, device, seed=GLOBAL_SEED
+    )
+
+    # 2. Evaluate all candidate models within the established reference space
+    models_pbar = tqdm.tqdm(
+        PREDICTION_FILES.items(),
+        desc="Overall Evaluation Progress (Models)",
+        unit="model",
+    )
+
+    for model_name, path_str in models_pbar:
+        evaluate_model_style(model_name, path_str, players_dict, global_space)
