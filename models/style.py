@@ -4,6 +4,7 @@ Includes the AutoEncoder architecture, spatial grid discretization,
 Jensen-Shannon Divergence computation, and the global reference space module.
 """
 
+import gc
 import logging
 import math
 
@@ -49,37 +50,34 @@ class BoardTransitionAutoEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass yielding reconstructed output and intermediate latent codes.
-        """
         latent = self.encoder(x)
         reconstructed = self.decoder(latent)
         return reconstructed, latent
 
 
 class TransitionDataset(Dataset):
-    """PyTorch Dataset wrapper for board transition feature matrices."""
+    """
+    PyTorch Dataset wrapper supporting both in-memory NumPy arrays and
+    disk-backed Memory-Mapped (np.memmap) matrices for zero-RAM overhead.
+    """
 
-    def __init__(self, vectors: np.ndarray) -> None:
-        self.vectors = torch.tensor(vectors, dtype=torch.float32)
+    def __init__(self, vectors: np.ndarray | np.memmap) -> None:
+        self.vectors = vectors
 
     def __len__(self) -> int:
         return len(self.vectors)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        return self.vectors[idx]
+        return torch.from_numpy(np.array(self.vectors[idx], dtype=np.float32))
 
 
 def train_autoencoder(
-    vectors: np.ndarray,
+    vectors: np.ndarray | np.memmap,
     epochs: int = 10,
     batch_size: int = 2048,
     lr: float = 1e-3,
     device: torch.device | None = None,
 ) -> BoardTransitionAutoEncoder:
-    """
-    Trains the transition AutoEncoder using Mean Squared Error loss and the Adam optimizer.
-    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -116,10 +114,6 @@ def discretize_to_grid(
     grid_size: int = 15,
     bounds: tuple[float, float, float, float] | None = None,
 ) -> tuple[np.ndarray, tuple[float, float, float, float]]:
-    """
-    Projects 2D continuous manifold coordinates onto a discrete spatial grid
-    to yield empirical probability distributions over discrete bins.
-    """
     if bounds is None:
         min_x, max_x = coords_2d[:, 0].min(), coords_2d[:, 0].max()
         min_y, max_y = coords_2d[:, 1].min(), coords_2d[:, 1].max()
@@ -141,9 +135,6 @@ def discretize_to_grid(
 
 
 def compute_jsd(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
-    """
-    Computes the symmetric Jensen-Shannon Divergence between two discrete probability distributions.
-    """
     m = 0.5 * (p + q)
     p_c = np.clip(p, eps, 1.0)
     q_c = np.clip(q, eps, 1.0)
@@ -164,8 +155,7 @@ def compute_jsd(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
 class GlobalStyleSpace:
     """
     Encapsulates a unified, pre-trained latent space (AutoEncoder + cuML UMAP) fitted
-    exclusively on ground-truth human player transitions to guarantee an unbiased,
-    invariant spatial evaluation manifold.
+    exclusively on ground-truth human player transitions.
     """
 
     def __init__(
@@ -179,31 +169,42 @@ class GlobalStyleSpace:
         self.device = device
 
     @classmethod
-    def fit_from_vectors(
+    def fit_from_memmap(
         cls,
-        reference_vectors: np.ndarray,
+        reference_memmap: np.memmap,
         ae_epochs: int = 10,
         device: torch.device | None = None,
         seed: int = 42,
     ) -> "GlobalStyleSpace":
-        """
-        Fits the global AutoEncoder and UMAP manifold using ground-truth human transitions.
-        """
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        n_samples = len(reference_memmap)
         logger.info(
-            f"Fitting Global AutoEncoder on {len(reference_vectors)} reference human transitions..."
+            f"Fitting Global AutoEncoder on {n_samples} disk-mapped reference transitions..."
         )
         ae_model = train_autoencoder(
-            reference_vectors, epochs=ae_epochs, batch_size=2048, device=device
+            reference_memmap, epochs=ae_epochs, batch_size=2048, device=device
         )
 
-        logger.info("Extracting global 128-D latent embeddings...")
+        logger.info("Extracting global 128-D latent embeddings in chunked passes...")
+        latent_chunks = []
+        chunk_size = 20000  # Smaller chunks to protect VRAM
+
         with torch.no_grad():
-            ref_tensor = torch.tensor(reference_vectors, dtype=torch.float32).to(device)
-            _, latent_ref = ae_model(ref_tensor)
-            latent_ref = latent_ref.cpu().numpy()
+            for i in range(0, n_samples, chunk_size):
+                chunk_vecs = torch.tensor(
+                    np.array(reference_memmap[i : i + chunk_size], dtype=np.float32),
+                    device=device,
+                )
+                _, latent_chunk = ae_model(chunk_vecs)
+                latent_chunks.append(latent_chunk.cpu().numpy())
+                del chunk_vecs
+
+        latent_ref = np.vstack(latent_chunks).astype(np.float32)
+        del latent_chunks
+        gc.collect()
+        torch.cuda.empty_cache()
 
         logger.info("Fitting GPU-accelerated cuML UMAP on reference latent manifold...")
         cuml_umap = cumlUMAP(
@@ -211,18 +212,41 @@ class GlobalStyleSpace:
         )
         cuml_umap.fit(latent_ref)
 
+        del latent_ref
+        gc.collect()
+        torch.cuda.empty_cache()
+
         return cls(ae_model=ae_model, cuml_umap=cuml_umap, device=device)
 
-    def project_to_2d(self, vectors: np.ndarray) -> np.ndarray:
+    def project_to_2d(self, vectors: np.ndarray, chunk_size: int = 10000) -> np.ndarray:
         """
-        Projects arbitrary 2304-D transition vectors onto the established 2D reference manifold.
+        Projects 2304-D transition vectors onto the 2D manifold using chunked VRAM inference.
         """
-        with torch.no_grad():
-            vec_tensor = torch.tensor(vectors, dtype=torch.float32).to(self.device)
-            _, latent = self.ae_model(vec_tensor)
-            latent_np = latent.cpu().numpy()
+        n_samples = len(vectors)
+        latent_chunks = []
 
+        # 1. Chunked AutoEncoder inference to avoid GPU VRAM spikes
+        with torch.no_grad():
+            for i in range(0, n_samples, chunk_size):
+                chunk_vecs = torch.tensor(
+                    vectors[i : i + chunk_size], dtype=torch.float32, device=self.device
+                )
+                _, latent_chunk = self.ae_model(chunk_vecs)
+                latent_chunks.append(latent_chunk.cpu().numpy())
+                del chunk_vecs
+
+        latent_np = np.vstack(latent_chunks).astype(np.float32)
+        del latent_chunks
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # 2. Transform through cuML UMAP
         coords_2d = self.cuml_umap.transform(latent_np)
+
+        del latent_np
+        gc.collect()
+        torch.cuda.empty_cache()
+
         return coords_2d
 
 
@@ -231,19 +255,12 @@ def evaluate_style_with_space(
     p_arr: np.ndarray,
     m_arr: np.ndarray,
 ) -> dict[str, float]:
-    """
-    Evaluates stylistic alignment by projecting target human transitions and model-predicted
-    transitions into the shared global reference space and computing discrete JSD.
-    """
-    # Project transitions into the fixed 2D spatial manifold
     p_2d = global_space.project_to_2d(p_arr)
     m_2d = global_space.project_to_2d(m_arr)
 
-    # Discretize projections onto a 15x15 spatial grid using player coordinate bounds
     p_dist, bounds = discretize_to_grid(p_2d, grid_size=15)
     m_dist, _ = discretize_to_grid(m_2d, grid_size=15, bounds=bounds)
 
-    # Calculate Jensen-Shannon Divergence and metric distance
     jsd_val = compute_jsd(p_dist, m_dist)
     js_dist = math.sqrt(jsd_val)
 
