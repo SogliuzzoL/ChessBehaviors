@@ -70,7 +70,7 @@ def build_global_reference_space(
     positions_file: Path,
     players_dict: dict[str, int],
     device: torch.device,
-    memmap_path: str = "data/reference_transitions.dat",
+    memmap_path: Path = DATA_DIR / "reference_transitions.dat",
     seed: int = 42,
 ) -> GlobalStyleSpace:
     """Construct the global invariant reference space manifold (Autoencoder + cuML UMAP) from
@@ -80,18 +80,19 @@ def build_global_reference_space(
         positions_file (Path): Path leading to raw position dataset records.
         players_dict (Dict[str, int]): Subject mapping linking cohort labels to integer indices.
         device (torch.device): Compute target device (CPU or CUDA GPU) for model execution.
-        memmap_path (str, optional): Target binary storage path for transition vector matrices.
-            Defaults to "data/reference_transitions.dat".
+        memmap_path (Path, optional): Target binary storage path for transition vector matrices.
+            Defaults to DATA_DIR / "reference_transitions.dat".
         seed (int, optional): Random seed parameter for manifold dimensionality reduction. Defaults to 42.
 
     Returns:
         GlobalStyleSpace: Instance of the fitted reference manifold pipeline.
     """
-    if Path(memmap_path).exists():
+    memmap_path = Path(memmap_path)
+    if memmap_path.exists():
         logger.info(
-            f"Existing reference binary detected at target path: {memmap_path}. Loading memory-mapped space."
+            "Existing reference binary detected at target path: %s. Loading memory-mapped space.",
+            memmap_path,
         )
-        # Infer row dimension count from disk file byte allocation size
         file_bytes = os.path.getsize(memmap_path)
         written_count = file_bytes // (2304 * 4)
     else:
@@ -108,10 +109,10 @@ def build_global_reference_space(
             .item()
         )
         logger.info(
-            f"Total candidate reference positions identified: {total_positions}"
+            "Total candidate reference positions identified: %d", total_positions
         )
 
-        os.makedirs(os.path.dirname(memmap_path), exist_ok=True)
+        os.makedirs(memmap_path.parent, exist_ok=True)
         fp = np.memmap(
             memmap_path, dtype="float32", mode="w+", shape=(total_positions, 2304)
         )
@@ -144,7 +145,9 @@ def build_global_reference_space(
         del fp
         gc.collect()
         logger.info(
-            f"Flushed {written_count} valid reference transition vectors to storage location: {memmap_path}"
+            "Flushed %d valid reference transition vectors to storage location: %s",
+            written_count,
+            memmap_path,
         )
 
     ref_memmap = np.memmap(
@@ -160,60 +163,6 @@ def build_global_reference_space(
     torch.cuda.empty_cache()
 
     return global_space
-
-
-def extract_player_transition_matrices(
-    prediction_file: Path,
-    target_player_index: int,
-) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    """Extract transition vector arrays for a candidate model conditioned on a specific subject index,
-    evaluated against real ground-truth human decision records.
-
-    Args:
-        prediction_file (Path): File system path leading to target prediction CSV file.
-        target_player_index (int): Integer identifier corresponding to conditioned subject profile.
-
-    Returns:
-        Dict[int, Tuple[np.ndarray, np.ndarray]]: Dictionary mapping subject index to paired
-            NumPy arrays containing empirical ground-truth and predicted model transition vectors.
-    """
-    lazy_df = pl.scan_csv(prediction_file)
-    player_data = (
-        lazy_df.filter(pl.col("player_index") == target_player_index)
-        .select(["fen", "move", "predicted_move"])
-        .collect()
-    )
-
-    if len(player_data) == 0:
-        return {}
-
-    fens = player_data["fen"].to_list()
-    player_moves = player_data["move"].to_list()
-    model_moves = player_data["predicted_move"].to_list()
-
-    p_vecs = []
-    m_vecs = []
-
-    for fen, p_move, m_move in zip(fens, player_moves, model_moves):
-        p_vec = get_transition_vector(fen, p_move)
-        m_vec = get_transition_vector(fen, m_move)
-
-        if p_vec is not None and m_vec is not None:
-            p_vecs.append(p_vec)
-            m_vecs.append(m_vec)
-
-    del player_data
-    gc.collect()
-
-    if not p_vecs or not m_vecs:
-        return {}
-
-    return {
-        target_player_index: (
-            np.array(p_vecs, dtype=np.float32),
-            np.array(m_vecs, dtype=np.float32),
-        )
-    }
 
 
 def build_model_vs_player_style_matrix(
@@ -256,10 +205,12 @@ def build_model_vs_player_style_matrix(
             .select(["fen", "predicted_move"])
             .collect()
         )
+
+        # Build map with strict non-null move validation
         model_pred_map = {
             row["fen"]: row["predicted_move"]
             for row in model_data.iter_rows(named=True)
-            if row["predicted_move"]
+            if row["predicted_move"] and isinstance(row["predicted_move"], str)
         }
         del model_data
         gc.collect()
@@ -271,8 +222,8 @@ def build_model_vs_player_style_matrix(
                 .collect()
             )
 
-            p_vecs = []
-            m_vecs = []
+            p_vecs: list[np.ndarray] = []
+            m_vecs: list[np.ndarray] = []
 
             for row in real_data.iter_rows(named=True):
                 fen = row["fen"]
@@ -280,6 +231,9 @@ def build_model_vs_player_style_matrix(
 
                 if fen in model_pred_map:
                     model_move = model_pred_map[fen]
+                    if not real_move or not model_move:
+                        continue
+
                     p_vec = get_transition_vector(fen, real_move)
                     m_vec = get_transition_vector(fen, model_move)
 
@@ -355,7 +309,7 @@ def plot_jsd_heatmap(
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     logger.info(
-        f"Heatmap visualization successfully saved to destination path: {output_path}"
+        "Heatmap visualization successfully saved to destination path: %s", output_path
     )
 
 
@@ -393,13 +347,15 @@ if __name__ == "__main__":
     for model_name, path in models_pbar:
         if not path.exists():
             logger.warning(
-                f"Prediction record missing for candidate architecture '{model_name}': {path}. Skipping evaluation."
+                "Prediction record missing for candidate architecture '%s': %s. Skipping evaluation.",
+                model_name,
+                path,
             )
             continue
 
         models_pbar.set_postfix({"current_model": model_name})
         logger.info(
-            f"Generating stylistic heatmap matrix for candidate model: {model_name}"
+            "Generating stylistic heatmap matrix for candidate model: %s", model_name
         )
 
         model_matrix, player_names = build_model_vs_player_style_matrix(
