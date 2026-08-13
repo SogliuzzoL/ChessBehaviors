@@ -146,7 +146,7 @@ def build_global_reference_space(
 
     del ref_memmap
     gc.collect()
-    torch.cuda.empty_cache()  # Explicit GPU VRAM cleanup post-fitting procedure
+    torch.cuda.empty_cache()
 
     return global_space
 
@@ -205,7 +205,7 @@ def evaluate_model_style(
 
         fens: list[str] = player_data["fen"].to_list()
         player_moves: list[str] = player_data["move"].to_list()
-        model_moves: list[str] = player_data["predicted_move"].to_list()
+        model_moves: list[str | None] = player_data["predicted_move"].to_list()
 
         p_vecs: list[np.ndarray] = []
         m_vecs: list[np.ndarray] = []
@@ -219,6 +219,9 @@ def evaluate_model_style(
         )
 
         for fen, p_move, m_move in encoding_pbar:
+            if not p_move or not m_move:
+                continue
+
             p_vec = get_transition_vector(fen, p_move)
             m_vec = get_transition_vector(fen, m_move)
 
@@ -255,7 +258,7 @@ def evaluate_model_style(
 
         del player_data, fens, player_moves, model_moves, p_vecs, m_vecs, p_arr, m_arr
         gc.collect()
-        torch.cuda.empty_cache()  # Explicit GPU VRAM cleanup per subject iteration
+        torch.cuda.empty_cache()
 
     if results:
         output_df = pl.DataFrame(results)

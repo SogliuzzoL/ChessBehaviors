@@ -10,7 +10,7 @@ from maia2.utils import board_to_tensor
 TRANSITION_CACHE: dict[tuple[str, str], np.ndarray] = {}
 
 
-def get_transition_vector(fen: str, move_uci: str) -> np.ndarray | None:
+def get_transition_vector(fen: str, move_uci: str | None) -> np.ndarray | None:
     """Compute and cache a 2304-dimensional vector representing a board state transition.
 
     Concatenates the pre-move and post-move spatial tensor representations into a unified
@@ -18,18 +18,26 @@ def get_transition_vector(fen: str, move_uci: str) -> np.ndarray | None:
 
     Args:
         fen (str): Initial board position in Forsyth-Edwards Notation.
-        move_uci (str): Candidate action in Universal Chess Interface (UCI) string format.
+        move_uci (Optional[str]): Candidate action in Universal Chess Interface (UCI) string format.
 
     Returns:
         Optional[np.ndarray]: Flattened 2304-dimensional float32 vector concatenation
-            of pre-move and post-move board states, or None if the action is illegal or unparseable.
+            of pre-move and post-move board states, or None if the action is invalid, missing, or illegal.
     """
+    # Guard against missing, empty, or non-string move predictions
+    if not move_uci or not isinstance(move_uci, str):
+        return None
+
     cache_key: tuple[str, str] = (fen, move_uci)
     if cache_key in TRANSITION_CACHE:
         return TRANSITION_CACHE[cache_key]
 
-    board_before = chess.Board(fen)
-    move = chess.Move.from_uci(move_uci)
+    try:
+        board_before = chess.Board(fen)
+        move = chess.Move.from_uci(move_uci)
+    except (ValueError, TypeError):
+        return None
+
     if move not in board_before.legal_moves:
         return None
 
