@@ -1,3 +1,11 @@
+"""
+Mixture-of-Experts Low-Rank Adaptation (MoE-LoRA) module for subject-conditioned
+policy adaptation on top of the pre-trained Maia-2 architecture.
+"""
+
+from collections.abc import Callable
+from typing import Any
+
 import chess
 import polars as pl
 import torch
@@ -18,20 +26,60 @@ from models.dataset import PlayerTrainDataset
 
 
 class LoRAExpert(nn.Module):
-    def __init__(self, v_dim: int, out_dim: int, rank: int = 8, alpha: float = 1.0):
+    """Low-Rank Adaptation (LoRA) expert block for parameter-efficient adapter layers.
+
+    Attributes:
+        down (nn.Linear): Down-projection linear bottleneck mapping hidden representation to rank dimension.
+        up (nn.Linear): Up-projection linear mapping rank dimension to output logit space.
+        scale (float): Constant scaling factor derived from rank hyperparameter.
+    """
+
+    def __init__(
+        self, v_dim: int, out_dim: int, rank: int = 8, alpha: float = 1.0
+    ) -> None:
+        """Initialize LoRA expert parameters.
+
+        Args:
+            v_dim (int): Input feature representation dimension.
+            out_dim (int): Output logit dimension matching policy action space.
+            rank (int, optional): Bottleneck rank dimension. Defaults to 8.
+            alpha (float, optional): Scaling hyperparameter constant. Defaults to 1.0.
+        """
         super().__init__()
         self.down = nn.Linear(v_dim, rank, bias=False)
         self.up = nn.Linear(rank, out_dim, bias=False)
-        self.scale = alpha / max(1.0, rank)
+        self.scale: float = alpha / max(1.0, float(rank))
 
+        # Kaiming-style zero-initialization for up-projection weights
         nn.init.zeros_(self.up.weight)
         nn.init.normal_(self.down.weight, std=0.02)
 
     def forward(self, v: torch.Tensor) -> torch.Tensor:
+        """Perform forward low-rank transformation.
+
+        Args:
+            v (torch.Tensor): Input hidden activation state tensor.
+
+        Returns:
+            torch.Tensor: Scaled output delta logit tensor.
+        """
         return self.up(self.down(v)) * self.scale
 
 
 class PlayerMoEAdapter(nn.Module):
+    """Subject-conditioned Mixture-of-Experts (MoE) routing adapter layer.
+
+    Routes subject embedding representations alongside backbone hidden states through a gated router
+    network to dynamically combine outputs from multiple parallel LoRA expert modules.
+
+    Attributes:
+        v_dim (int): Backbone hidden state dimension.
+        out_dim (int): Policy logit output dimension.
+        player_emb (nn.Embedding): Trainable subject profile embedding table.
+        router (nn.Sequential): Multi-Layer Perceptron gating network outputting softmax expert weights.
+        experts (nn.ModuleList): Collection of independent LoRA expert modules.
+    """
+
     def __init__(
         self,
         v_dim: int,
@@ -39,10 +87,19 @@ class PlayerMoEAdapter(nn.Module):
         n_players: int,
         n_experts: int = 8,
         lora_rank: int = 8,
-    ):
+    ) -> None:
+        """Initialize PlayerMoEAdapter.
+
+        Args:
+            v_dim (int): Backbone representation dimension.
+            out_dim (int): Target output logit dimension.
+            n_players (int): Total subject profiles in population catalog.
+            n_experts (int, optional): Total parallel LoRA expert modules. Defaults to 8.
+            lora_rank (int, optional): Inner rank of individual LoRA experts. Defaults to 8.
+        """
         super().__init__()
-        self.v_dim = v_dim
-        self.out_dim = out_dim
+        self.v_dim: int = v_dim
+        self.out_dim: int = out_dim
         self.player_emb = nn.Embedding(n_players, 32)
 
         self.router = nn.Sequential(
@@ -55,6 +112,15 @@ class PlayerMoEAdapter(nn.Module):
         )
 
     def forward(self, v: torch.Tensor, player_ids: torch.Tensor) -> torch.Tensor:
+        """Compute gated linear combination of expert outputs conditioned on subject identities.
+
+        Args:
+            v (torch.Tensor): Backbone hidden representation tensor.
+            player_ids (torch.Tensor): Subject identifier index tensor.
+
+        Returns:
+            torch.Tensor: Aggregated policy logit delta tensor.
+        """
         p_emb = self.player_emb(player_ids)
         router_in = torch.cat([v, p_emb], dim=-1)
         g = F.softmax(self.router(router_in), dim=-1)
@@ -66,44 +132,78 @@ class PlayerMoEAdapter(nn.Module):
 
 
 class Maia2MoELoRA(ChessModel):
+    """Maia-2 model architecture augmented with subject-conditioned MoE-LoRA adapters.
+
+    Integrates parameter-efficient adapters hooked into intermediate layer normalization states
+    to specialize policy predictions per human subject cohort without altering base weights.
+
+    Attributes:
+        model: Underlying pre-trained Maia-2 neural execution model.
+        prepared: Pre-allocated inference context structures.
+        pruning_fn (Optional[Callable[[Dict[str, float]], List[str]]]): Optional policy space pruning function.
+        all_moves_dict (Dict[str, int]): Vocabulary mapping UCI move strings to integer indices.
+        elo_dict (Dict[Any, Any]): Subject rating metadata dictionary.
+        max_maia_idx (int): Baseline reference rating embedding index.
+        extracted_hidden_v (Optional[torch.Tensor]): Intermediate activation tensor captured via forward hook.
+        adapter (PlayerMoEAdapter): Instantiated trainable MoE-LoRA adapter layer.
+    """
+
     def __init__(
         self,
-        model,
+        model: object,
         n_players: int,
-        pruning_fn=None,
+        pruning_fn: Callable[[dict[str, float]], list[str]] | None = None,
         n_experts: int = 8,
         lora_rank: int = 8,
-    ):
+    ) -> None:
+        """Initialize the Maia2MoELoRA architecture wrapper.
+
+        Args:
+            model (object): Pre-trained Maia-2 model architecture instance.
+            n_players (int): Total subject profiles in population catalog.
+            pruning_fn (Optional[Callable[[Dict[str, float]], List[str]]], optional): Action space pruning
+                transformation. Defaults to None.
+            n_experts (int, optional): Parallel LoRA expert count. Defaults to 8.
+            lora_rank (int, optional): Inner rank parameter for LoRA blocks. Defaults to 8.
+
+        Raises:
+            AttributeError: If target hook layer ('last_ln') is missing from the base architecture.
+        """
         self.model = model
         self.prepared = inference.prepare()
         self.pruning_fn = pruning_fn
 
         all_moves = get_all_possible_moves()
-        self.all_moves_dict = {move: i for i, move in enumerate(all_moves)}
-        self.elo_dict = create_elo_dict()
+        self.all_moves_dict: dict[str, int] = {
+            move: i for i, move in enumerate(all_moves)
+        }
+        self.elo_dict: dict[Any, Any] = create_elo_dict()
 
         original_emb = getattr(
             self.model,
             "elo_embedding",
             getattr(getattr(self.model, "net", None), "elo_embedding", None),
         )
-        self.max_maia_idx = original_emb.num_embeddings - 1
+        self.max_maia_idx: int = original_emb.num_embeddings - 1
 
         net_model = getattr(self.model, "net", self.model)
-        self.extracted_hidden_v = None
+        self.extracted_hidden_v: torch.Tensor | None = None
 
-        def hook_fn(module, input_tensor, output_tensor):
+        def hook_fn(
+            module: nn.Module, input_tensor: Any, output_tensor: torch.Tensor
+        ) -> None:
             self.extracted_hidden_v = output_tensor
 
         if hasattr(net_model, "last_ln"):
             net_model.last_ln.register_forward_hook(hook_fn)
         else:
             raise AttributeError(
-                "Impossible de localiser 'last_ln' dans l'architecture Maia-2."
+                "Unable to locate target normalization layer 'last_ln' in Maia-2 network topology."
             )
 
         device = next(self.model.parameters()).device
 
+        # Infer intermediate hidden dimension using a zero-gradient dry run
         with torch.no_grad():
             dummy_b = board_to_tensor(chess.Board()).unsqueeze(0).to(device)
             ref_elo = torch.tensor([self.max_maia_idx], device=device)
@@ -118,7 +218,8 @@ class Maia2MoELoRA(ChessModel):
             lora_rank=lora_rank,
         ).to(device)
 
-    def reset_adapter(self):
+    def reset_adapter(self) -> None:
+        """Reset adapter weights to default normal distributions."""
         for m in self.adapter.modules():
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.02)
@@ -135,7 +236,20 @@ class Maia2MoELoRA(ChessModel):
         epochs: int = 20,
         batch_size: int = 64,
         lr: float = 1e-2,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
+        """Optimize MoE-LoRA adapter parameters on subject observational positions.
+
+        Args:
+            player_index (int): Target subject profile identifier.
+            train_pos (pl.DataFrame): Dataframe containing training board positions.
+            test_pos (Optional[pl.DataFrame], optional): Optional validation board positions. Defaults to None.
+            epochs (int, optional): Optimization epoch count. Defaults to 20.
+            batch_size (int, optional): Mini-batch processing size. Defaults to 64.
+            lr (float, optional): Initial peak learning rate. Defaults to 1e-2.
+
+        Returns:
+            List[Dict[str, Any]]: Metrics history log containing batch and epoch-level evaluation records.
+        """
         if len(train_pos) == 0:
             return []
 
@@ -163,13 +277,13 @@ class Maia2MoELoRA(ChessModel):
         criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
         device = next(self.model.parameters()).device
 
-        history = []
+        history: list[dict[str, Any]] = []
         global_step = 0
 
         total_batches = epochs * len(dataloader)
         train_pbar = tqdm.tqdm(
             total=total_batches,
-            desc=f"Fit MoE Player {player_index}",
+            desc=f"Optimizing MoE Adapter [Subject {player_index}]",
             leave=False,
             unit="batch",
         )
@@ -229,7 +343,7 @@ class Maia2MoELoRA(ChessModel):
                 )
                 train_pbar.update(1)
 
-            epoch_log = {
+            epoch_log: dict[str, Any] = {
                 "type": "epoch",
                 "player_index": player_index,
                 "epoch": epoch + 1,
@@ -237,6 +351,7 @@ class Maia2MoELoRA(ChessModel):
                 "lr": current_lr,
             }
 
+            # Evaluate intermediate validation performance
             if test_pos is not None and len(test_pos) > 0:
                 self.adapter.eval()
                 val_loss, correct, total = 0.0, 0, 0
@@ -284,11 +399,22 @@ class Maia2MoELoRA(ChessModel):
     def predict(
         self, board: chess.Board, player_index: int = 0
     ) -> tuple[dict[str, float], float]:
+        """Perform forward inference with MoE-LoRA adapter policy corrections.
+
+        Args:
+            board (chess.Board): Target chess board position.
+            player_index (int, optional): Subject profile identifier. Defaults to 0.
+
+        Returns:
+            Tuple[Dict[str, float], float]: Tuple containing normalized move policy distribution
+                and scalar board value evaluation.
+        """
         device = next(self.model.parameters()).device
 
         fen = board.fen()
         black_flag = False
 
+        # Apply perspective transformation if active side is Black
         if fen.split(" ")[1] == "b":
             proc_board = chess.Board(fen).mirror()
             black_flag = True
@@ -299,6 +425,7 @@ class Maia2MoELoRA(ChessModel):
         ref_elo = torch.tensor([self.max_maia_idx], device=device)
         player_ids = torch.tensor([player_index], device=device)
 
+        # Build legal action mask over full vocabulary
         legal_moves = torch.zeros(len(self.all_moves_dict), device=device)
         legal_indices = [
             self.all_moves_dict[m.uci()]
@@ -323,8 +450,9 @@ class Maia2MoELoRA(ChessModel):
             if black_flag:
                 val = 1 - val
 
+        # Revert legal moves to original perspective and string format
         all_moves_reversed = {v: k for k, v in self.all_moves_dict.items()}
-        raw_moves = {}
+        raw_moves: dict[str, float] = {}
         for idx in legal_indices:
             move_uci = all_moves_reversed[idx]
             if black_flag:
@@ -334,10 +462,11 @@ class Maia2MoELoRA(ChessModel):
         raw_moves = dict(sorted(raw_moves.items(), key=lambda x: x[1], reverse=True))
 
         legal_uci_moves = {m.uci() for m in board.legal_moves}
-        legal_moves_dict = {
+        legal_moves_dict: dict[str, float] = {
             move: score for move, score in raw_moves.items() if move in legal_uci_moves
         }
 
+        # Apply optional action space pruning
         if self.pruning_fn and legal_moves_dict:
             moves_pruned = self.pruning_fn(legal_moves_dict)
             legal_moves_dict = {
@@ -346,6 +475,7 @@ class Maia2MoELoRA(ChessModel):
                 if move in legal_moves_dict
             }
 
+        # Renormalize posterior legal move distribution
         total = sum(legal_moves_dict.values())
         if total > 0:
             legal_moves_dict = {

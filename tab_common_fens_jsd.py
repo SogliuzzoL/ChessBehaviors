@@ -1,45 +1,56 @@
+"""
+LaTeX tabular exporter for generating publication-ready summary and breakdown tables
+evaluating Jensen-Shannon Divergence (JSD) across model variants on common board positions (FENs).
+"""
+
 import csv
+import logging
 from pathlib import Path
 
-# Configuration du dossier de sortie pour les tableaux LaTeX
-OUTPUT_DIR = Path("tables")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-# Mapping des noms de modèles vers les fichiers JSD réellement générés
-RESULTS_CONFIG = {
-    # Modèles Policy
+# Output directory path specification for generated LaTeX tables
+OUTPUT_DIR: Path = Path("tables")
+
+# Mapping of model identifiers to generated JSD evaluation dataset paths
+RESULTS_CONFIG: dict[str, str] = {
+    # Policy Models
     "Maia-2 Baseline": "data/maia_2_baseline_common_fens_jsd.csv",
     "Maia-2 FT": "data/maia_2_ft_common_fens_jsd.csv",
     "Maia-2 Nucleus": "data/maia_2_nucleus_common_fens_jsd.csv",
     "Maia-2 MoE-LoRA": "data/maia_2_moe_lora_common_fens_jsd.csv",
-    # Modèles Descent
+    # Descent Search Models
     "Maia-2 Descent": "data/maia_2_descent_common_fens_jsd.csv",
     "Maia-2 N. + Descent": "data/maia_2_n__descent_common_fens_jsd.csv",
     "Maia-2 FT + N. + Descent": "data/maia_2_ft__n__descent_common_fens_jsd.csv",
     "Maia-2 MoE-LoRA N. + Descent": (
         "data/maia_2_moe_lora_n__descent_common_fens_jsd.csv"
     ),
-    # Modèles MCTS
+    # MCTS Search Models
     "Maia-2 MCTS": "data/maia_2_mcts_common_fens_jsd.csv",
     "Maia-2 N. + MCTS": "data/maia_2_n__mcts_common_fens_jsd.csv",
     "Maia-2 FT + N. + MCTS": "data/maia_2_ft__n__mcts_common_fens_jsd.csv",
     "Maia-2 MoE-LoRA N. + MCTS": ("data/maia_2_moe_lora_n__mcts_common_fens_jsd.csv"),
 }
 
-POLICY_MODELS = [
+POLICY_MODELS: list[str] = [
     "Maia-2 Baseline",
     "Maia-2 FT",
     "Maia-2 Nucleus",
     "Maia-2 MoE-LoRA",
 ]
 
-DESCENT_MODELS = [
+DESCENT_MODELS: list[str] = [
     "Maia-2 Descent",
     "Maia-2 N. + Descent",
     "Maia-2 FT + N. + Descent",
     "Maia-2 MoE-LoRA N. + Descent",
 ]
 
-MCTS_MODELS = [
+MCTS_MODELS: list[str] = [
     "Maia-2 MCTS",
     "Maia-2 N. + MCTS",
     "Maia-2 FT + N. + MCTS",
@@ -50,7 +61,16 @@ MCTS_MODELS = [
 def load_jsd_data_from_csv(
     config: dict[str, str], metric_column: str = "mean_jsd"
 ) -> dict[str, dict[str, float]]:
-    data = {}
+    """Load JSD evaluation metrics from structured CSV files per candidate architecture.
+
+    Args:
+        config (Dict[str, str]): Map of candidate model names to file system CSV paths.
+        metric_column (str, optional): Target numerical column name to extract. Defaults to "mean_jsd".
+
+    Returns:
+        Dict[str, Dict[str, float]]: Nested mapping of model names to subject-level metric values.
+    """
+    data: dict[str, dict[str, float]] = {}
     for model_name, path_str in config.items():
         path = Path(path_str)
         data[model_name] = {}
@@ -62,7 +82,10 @@ def load_jsd_data_from_csv(
                     val = float(row[metric_column])
                     data[model_name][player] = val
         else:
-            print(f"Fichier introuvable ({path_str}), colonne laissée vide.")
+            logger.warning(
+                "Target evaluation file not found (%s). Output column unpopulated.",
+                path_str,
+            )
     return data
 
 
@@ -71,7 +94,17 @@ def generate_summary_table(
     caption: str = "Overall Jensen-Shannon Divergence (JSD) summary on common FEN positions across model variants.",
     label: str = "tab:jsd_summary_common_fens",
 ) -> str:
-    model_stats = {}
+    """Generate LaTeX tabular code summarizing global model performance (mean and standard deviation).
+
+    Args:
+        data (Dict[str, Dict[str, float]]): Extracted metric dictionary mapping model variants to player scores.
+        caption (str, optional): Descriptive caption for the LaTeX table figure. Defaults to standard summary text.
+        label (str, optional): Cross-referencing label identifier for LaTeX compilation. Defaults to "tab:jsd_summary_common_fens".
+
+    Returns:
+        str: Formatted LaTeX source code string representing the output table.
+    """
+    model_stats: dict[str, tuple[float, float]] = {}
     for model_name, player_dict in data.items():
         valid_vals = [
             v
@@ -87,7 +120,7 @@ def generate_summary_table(
 
     best_mean = min(stats[0] for stats in model_stats.values()) if model_stats else None
 
-    latex = []
+    latex: list[str] = []
     latex.append("\\begin{table}[!htbp]")
     latex.append("  \\centering")
     latex.append(f"  \\caption{{{caption}}}")
@@ -99,7 +132,7 @@ def generate_summary_table(
     )
     latex.append("    \\midrule")
 
-    for model_name in data.keys():
+    for model_name in data:
         if model_name in model_stats:
             mean_val, std_val = model_stats[model_name]
             mean_str = f"{mean_val:.4f}"
@@ -122,10 +155,21 @@ def generate_summary_table(
 
 def generate_player_breakdown_table(
     data: dict[str, dict[str, float]],
-    selected_models: list[str] = None,
+    selected_models: list[str] | None = None,
     caption: str = "Detailed Jensen-Shannon Divergence per player evaluated on common FEN positions.",
     label: str = "tab:jsd_breakdown_common_fens",
 ) -> str:
+    """Generate detailed per-subject breakdown LaTeX tables for selected model categories.
+
+    Args:
+        data (Dict[str, Dict[str, float]]): Extracted metric dictionary.
+        selected_models (Optional[List[str]], optional): Subset of model identifiers to visualize. Defaults to None.
+        caption (str, optional): Table caption string. Defaults to detailed breakdown caption.
+        label (str, optional): Table cross-referencing label. Defaults to "tab:jsd_breakdown_common_fens".
+
+    Returns:
+        str: Formatted LaTeX source code string representing the breakdown matrix.
+    """
     if not selected_models:
         selected_models = list(data.keys())
 
@@ -142,7 +186,7 @@ def generate_player_breakdown_table(
 
     col_spec = "l" + "c" * len(models)
 
-    latex = []
+    latex: list[str] = []
     latex.append("\\begin{table}[!htbp]")
     latex.append("  \\centering")
     latex.append(f"  \\caption{{{caption}}}")
@@ -181,7 +225,7 @@ def generate_player_breakdown_table(
 
     latex.append("      \\midrule")
 
-    avg_vals = {}
+    avg_vals: dict[str, float] = {}
     for model in models:
         model_dict = data[model]
         valid_vals = [
@@ -220,12 +264,12 @@ def generate_player_breakdown_table(
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    logger.info("Extracting JSD evaluation metrics from result files...")
     jsd_data = load_jsd_data_from_csv(RESULTS_CONFIG, metric_column="mean_jsd")
 
     summary_tex = generate_summary_table(jsd_data)
-    with open(
-        OUTPUT_DIR / "summary_common_fens_jsd_table.tex", "w", encoding="utf-8"
-    ) as f:
+    summary_path = OUTPUT_DIR / "summary_common_fens_jsd_table.tex"
+    with open(summary_path, "w", encoding="utf-8") as f:
         f.write(summary_tex)
 
     policy_tex = generate_player_breakdown_table(
@@ -234,9 +278,8 @@ if __name__ == "__main__":
         caption="Jensen-Shannon Divergence on common FENs for Direct Policy Variants.",
         label="tab:jsd_policy_common_fens",
     )
-    with open(
-        OUTPUT_DIR / "policy_common_fens_jsd_table.tex", "w", encoding="utf-8"
-    ) as f:
+    policy_path = OUTPUT_DIR / "policy_common_fens_jsd_table.tex"
+    with open(policy_path, "w", encoding="utf-8") as f:
         f.write(policy_tex)
 
     descent_tex = generate_player_breakdown_table(
@@ -245,9 +288,8 @@ if __name__ == "__main__":
         caption="Jensen-Shannon Divergence on common FENs for Descent Search Variants.",
         label="tab:jsd_descent_common_fens",
     )
-    with open(
-        OUTPUT_DIR / "descent_common_fens_jsd_table.tex", "w", encoding="utf-8"
-    ) as f:
+    descent_path = OUTPUT_DIR / "descent_common_fens_jsd_table.tex"
+    with open(descent_path, "w", encoding="utf-8") as f:
         f.write(descent_tex)
 
     mcts_tex = generate_player_breakdown_table(
@@ -256,9 +298,10 @@ if __name__ == "__main__":
         caption="Jensen-Shannon Divergence on common FENs for MCTS Search Variants.",
         label="tab:jsd_mcts_common_fens",
     )
-    with open(
-        OUTPUT_DIR / "mcts_common_fens_jsd_table.tex", "w", encoding="utf-8"
-    ) as f:
+    mcts_path = OUTPUT_DIR / "mcts_common_fens_jsd_table.tex"
+    with open(mcts_path, "w", encoding="utf-8") as f:
         f.write(mcts_tex)
 
-    print(f"Fichiers LaTeX générés avec succès dans le dossier '{OUTPUT_DIR}'.")
+    logger.info(
+        "LaTeX tables successfully generated and saved to directory: %s", OUTPUT_DIR
+    )

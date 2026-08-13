@@ -37,6 +37,11 @@ PREDICTION_FILES = {
 
 
 def compute_kl_divergence(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> float:
+    r"""Compute the Kullback-Leibler (KL) divergence between two discrete probability distributions.
+
+    Calculates $D_{KL}(P \parallel Q)$ using a base-2 logarithm to express divergence in bits.
+    Numerical stability is ensured by clipping input distributions with an epsilon parameter.
+    """
     p = np.clip(p, eps, 1.0)
     q = np.clip(q, eps, 1.0)
     return float(np.sum(p * np.log2(p / q)))
@@ -45,6 +50,11 @@ def compute_kl_divergence(p: np.ndarray, q: np.ndarray, eps: float = 1e-12) -> f
 def compute_jensen_shannon_divergence(
     p_dict: dict[str, float], q_dict: dict[str, float]
 ) -> float:
+    """Compute the symmetric Jensen-Shannon Divergence (JSD) between two categorical move probability distributions.
+
+    Evaluates $JSD(P \\parallel Q) = \\frac{1}{2} D_{KL}(P \\parallel M) + \\frac{1}{2} D_{KL}(Q \\parallel M)$,
+    where $M = \\frac{1}{2}(P + Q)$ represents the mixture distribution across the union of support moves.
+    """
     all_moves = list(set(p_dict.keys()).union(set(q_dict.keys())))
     if not all_moves:
         return 0.0
@@ -69,22 +79,32 @@ def compute_jensen_shannon_divergence(
 
 
 def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, int]):
+    """Evaluate model predictive performance via Jensen-Shannon Divergence across common Forsyth-Edwards Notation (FEN) states.
+
+    Performs a comparative evaluation of model move probability distributions against empirical move frequency
+    distributions. The analysis is strictly constrained to board states (FENs) that are mutually observed across all
+    subjects in the evaluation cohort.
+    """
     path = Path(csv_path)
     if not path.exists():
         logger.warning(
-            f"Fichier de prédictions introuvable : {csv_path}, passage au suivant."
+            f"Prediction record missing at target path: {csv_path}. Skipping evaluation for model: {model_name}."
         )
         return
 
-    logger.info(f"Évaluation JSD (Lazy Mode) pour le modèle : {model_name}")
+    logger.info(
+        f"Executing JSD evaluation pipeline (lazy computation paradigm) for candidate model: {model_name}"
+    )
 
     valid_player_indices = set(players_dict.values())
     lazy_df = pl.scan_csv(csv_path).filter(
         pl.col("player_index").is_in(valid_player_indices)
     )
 
-    # 1. Identification des FEN communes à TOUS les joueurs
-    logger.info("Recherche des FEN communes à tous les joueurs...")
+    # 1. Identification of board positions (FENs) shared across all cohort subjects
+    logger.info(
+        "Identifying common Forsyth-Edwards Notation (FEN) positions across all player cohorts..."
+    )
     common_fens_df = (
         lazy_df.select(["player_index", "fen"])
         .unique()
@@ -95,13 +115,17 @@ def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, i
     )
 
     common_fens = set(common_fens_df["fen"].to_list())
-    logger.info(f"Nombre de FEN communes trouvées : {len(common_fens)}")
+    logger.info(
+        f"Identified {len(common_fens)} mutually shared board positions (FENs)."
+    )
 
     if not common_fens:
-        logger.warning("Aucune FEN commune trouvée entre les joueurs.")
+        logger.warning(
+            "Intersection query yielded zero common FEN positions across subjects. Terminating model evaluation."
+        )
         return
 
-    # 2. Filtrage global sur les FEN communes
+    # 2. Global filtering on common board positions (FENs)
     filtered_lazy_df = lazy_df.filter(pl.col("fen").is_in(common_fens)).select(
         ["player_index", "fen", "move", "moves_probs"]
     )
@@ -176,7 +200,7 @@ def evaluate_model_jsd(model_name: str, csv_path: str, players_dict: dict[str, i
         )
         out_file = f"data/{clean_name}_common_fens_jsd.csv"
         output_df.write_csv(out_file)
-        logger.info(f"Résultats JSD enregistrés dans : {out_file}")
+        logger.info(f"Evaluation metrics successfully exported to: {out_file}")
 
 
 if __name__ == "__main__":

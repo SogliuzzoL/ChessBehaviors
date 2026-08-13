@@ -1,30 +1,30 @@
 """
-Utility module for processing board state transitions into high-dimensional vector representations.
+Utility module for converting chess board state transitions into high-dimensional feature representations.
 """
 
 import chess
 import numpy as np
 from maia2.utils import board_to_tensor
 
-# Global lookup cache for transition vectors: (fen, move_uci) -> 2304-D vector
+# Global cache for transition representations mapping (FEN, UCI move) to 2304-dimensional vectors
 TRANSITION_CACHE: dict[tuple[str, str], np.ndarray] = {}
 
 
 def get_transition_vector(fen: str, move_uci: str) -> np.ndarray | None:
-    """
-    Computes and caches the 2304-dimensional board state transition vector
-    for a given board position (FEN) and played move (UCI).
+    """Compute and cache a 2304-dimensional vector representing a board state transition.
+
+    Concatenates the pre-move and post-move spatial tensor representations into a unified
+    feature vector for downstream stylometric and representation analysis.
 
     Args:
-        fen (str): Board state in Forsyth-Edwards Notation.
-        move_uci (str): Played move in Universal Chess Interface format.
+        fen (str): Initial board position in Forsyth-Edwards Notation.
+        move_uci (str): Candidate action in Universal Chess Interface (UCI) string format.
 
     Returns:
-        Optional[np.ndarray]: Flat 2304-dimensional float32 vector concatenating
-                              the pre-move and post-move board representations,
-                              or None if the move is illegal or unparseable.
+        Optional[np.ndarray]: Flattened 2304-dimensional float32 vector concatenation
+            of pre-move and post-move board states, or None if the action is illegal or unparseable.
     """
-    cache_key = (fen, move_uci)
+    cache_key: tuple[str, str] = (fen, move_uci)
     if cache_key in TRANSITION_CACHE:
         return TRANSITION_CACHE[cache_key]
 
@@ -36,16 +36,16 @@ def get_transition_vector(fen: str, move_uci: str) -> np.ndarray | None:
     board_after = board_before.copy()
     board_after.push(move)
 
-    # Enforce board orientation symmetry for Black to move
+    # Normalize board perspective symmetry when Black is the active player
     if board_before.turn == chess.BLACK:
         board_before = board_before.mirror()
         board_after = board_after.mirror()
 
-    # Extract 1152-D spatial representations using Maia-2 pre-processing
-    t_before = board_to_tensor(board_before).cpu().numpy().flatten()
-    t_after = board_to_tensor(board_after).cpu().numpy().flatten()
+    # Extract 1152-dimensional spatial representations via Maia-2 preprocessing
+    t_before: np.ndarray = board_to_tensor(board_before).cpu().numpy().flatten()
+    t_after: np.ndarray = board_to_tensor(board_after).cpu().numpy().flatten()
 
-    # Concatenate pre- and post-move representations into a 2304-D transition vector
-    vec = np.concatenate([t_before, t_after]).astype(np.float32)
+    # Concatenate pre-move and post-move representations into a 2304-dimensional transition vector
+    vec: np.ndarray = np.concatenate([t_before, t_after]).astype(np.float32)
     TRANSITION_CACHE[cache_key] = vec
     return vec

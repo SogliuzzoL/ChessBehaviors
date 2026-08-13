@@ -1,8 +1,11 @@
+"""
+Matrix evaluation pipeline for computing inter-subject and model-conditioned
+Jensen-Shannon Divergence (JSD) heatmaps across mutually observed board positions (FENs).
+"""
+
 import ast
 import gc
 import logging
-import math
-from collections import Counter
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -17,10 +20,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path("figures")
-DATA_DIR = Path("data")
+OUTPUT_DIR: Path = Path("figures")
+DATA_DIR: Path = Path("data")
 
-PREDICTION_FILES = {
+PREDICTION_FILES: dict[str, Path] = {
     "Maia-2 Baseline": DATA_DIR / "maia2_predictions.csv",
     "Maia-2 FT": DATA_DIR / "maia2_ft_predictions.csv",
     "Maia-2 Nucleus": DATA_DIR / "maia2_nucleus_predictions.csv",
@@ -44,7 +47,20 @@ PREDICTION_FILES = {
 def compute_jensen_shannon_divergence_fast(
     p_dict: dict[str, float], q_dict: dict[str, float], eps: float = 1e-12
 ) -> float:
-    """Calcul optimisé de la JSD entre deux distributions par dictionnaires."""
+    """Compute vectorized Jensen-Shannon Divergence (JSD) using NumPy optimizations.
+
+    Calculates the symmetric divergence between target probability distribution $P$ and
+    candidate distribution $Q$ over the union of supported actions.
+
+    Args:
+        p_dict (Dict[str, float]): Target discrete probability distribution.
+        q_dict (Dict[str, float]): Candidate discrete probability distribution.
+        eps (float, optional): Epsilon threshold to ensure numerical stability during
+            logarithmic operations. Defaults to 1e-12.
+
+    Returns:
+        float: Computed Jensen-Shannon Divergence value bounded in $[0, 1]$.
+    """
     all_moves = list(set(p_dict.keys()).union(set(q_dict.keys())))
     if not all_moves:
         return 0.0
@@ -73,12 +89,25 @@ def compute_jensen_shannon_divergence_fast(
 def extract_player_real_distributions(
     positions_file: Path, players_dict: dict[str, int]
 ) -> tuple[dict[int, dict[str, dict[str, float]]], set[str]]:
-    """Charge et normalise une seule fois en mémoire les distributions réelles des joueurs."""
-    logger.info("Extraction globale des coups réels des joueurs...")
+    """Extract and normalize human empirical move distributions across shared board positions.
+
+    Performs a single-pass extraction of ground-truth moves across subjects and restricts
+    the evaluation dataset to board positions (FENs) mutually observed by all subjects.
+
+    Args:
+        positions_file (Path): Path to CSV containing raw position observations.
+        players_dict (Dict[str, int]): Map of subject identifiers to numerical cohort indices.
+
+    Returns:
+        Tuple[Dict[int, Dict[str, Dict[str, float]]], Set[str]]: Nested dictionary mapping
+            subject indices and FENs to move probability distributions, alongside the
+            set of common FEN identifiers.
+    """
+    logger.info("Extracting global empirical move distributions for subject cohorts...")
     lazy_pos = pl.scan_csv(positions_file)
     valid_indices = set(players_dict.values())
 
-    # Extraction optimisée Polars par regroupement
+    # Optimized grouped aggregation using Polars native lazy operations
     df_counts = (
         lazy_pos.filter(pl.col("player_index").is_in(valid_indices))
         .group_by(["player_index", "fen", "move"])
@@ -86,7 +115,7 @@ def extract_player_real_distributions(
         .collect()
     )
 
-    # Détermination des FENs strictement communes à TOUS les joueurs
+    # Identification of board states (FENs) strictly common to ALL subjects
     fen_player_counts = (
         df_counts.select(["player_index", "fen"])
         .unique()
@@ -95,9 +124,12 @@ def extract_player_real_distributions(
         .filter(pl.col("p_count") == len(valid_indices))
     )
     common_fens = set(fen_player_counts["fen"].to_list())
-    logger.info(f"Nombre de FENs communes à tous les joueurs : {len(common_fens)}")
+    logger.info(
+        "Identified %d mutually shared board positions (FENs) across all subjects.",
+        len(common_fens),
+    )
 
-    # Restriction aux FENs communes et calcul des distributions relatives
+    # Constrain records to shared FENs and compute empirical relative frequencies
     df_filtered = df_counts.filter(pl.col("fen").is_in(common_fens))
 
     real_distributions: dict[int, dict[str, dict[str, float]]] = {
@@ -132,7 +164,17 @@ def build_inter_player_ground_truth_matrix(
     common_fens: set[str],
     players_dict: dict[str, int],
 ) -> tuple[np.ndarray, list[str]]:
-    """Calcule la matrice JSD entre les joueurs réels sur les FENs communes."""
+    """Construct ground-truth pairwise JSD divergence matrix among human subjects.
+
+    Args:
+        real_distributions (Dict[int, Dict[str, Dict[str, float]]]): Empirical distributions.
+        common_fens (Set[str]): Intersected board state set across subjects.
+        players_dict (Dict[str, int]): Subject mapping dictionary.
+
+    Returns:
+        Tuple[np.ndarray, List[str]]: Symmetric square matrix of pairwise mean JSD metrics
+            and ordered subject names.
+    """
     player_names = list(players_dict.keys())
     n_players = len(player_names)
     matrix = np.zeros((n_players, n_players), dtype=np.float64)
@@ -162,7 +204,18 @@ def build_model_vs_player_matrix(
     common_fens: set[str],
     players_dict: dict[str, int],
 ) -> tuple[np.ndarray, list[str]]:
-    """Calcule la matrice JSD pour un modèle vs joueurs réels sur les FENs communes."""
+    """Construct cross-divergence matrix comparing model-conditioned predictions to human subjects.
+
+    Args:
+        model_predictions_file (Path): Path to candidate model prediction records.
+        real_distributions (Dict[int, Dict[str, Dict[str, float]]]): Ground-truth distributions.
+        common_fens (Set[str]): Intersected board state set across subjects.
+        players_dict (Dict[str, int]): Subject mapping dictionary.
+
+    Returns:
+        Tuple[np.ndarray, List[str]]: Asymmetric matrix comparing model predictions (rows)
+            against human empirical behavior (columns) and ordered subject names.
+    """
     player_names = list(players_dict.keys())
     n_players = len(player_names)
     matrix = np.zeros((n_players, n_players), dtype=np.float64)
@@ -227,8 +280,18 @@ def plot_jsd_heatmap(
     title: str,
     y_label: str = "Model Conditioned Player",
     is_inter_player: bool = False,
-):
-    """Génère et sauvegarde une heatmap JSD optimisée."""
+) -> None:
+    """Render and export publication-ready JSD heatmap visualization.
+
+    Args:
+        jsd_matrix (np.ndarray): 2D array of computed JSD divergence values.
+        player_names (List[str]): Subject cohort labels for tick alignment.
+        output_path (Path): File system target path for image export.
+        title (str): Figure title text.
+        y_label (str, optional): Vertical axis title label. Defaults to "Model Conditioned Player".
+        is_inter_player (bool, optional): Flag indicating inter-subject ground truth matrix
+            for palette selection. Defaults to False.
+    """
     plt.figure(figsize=(11, 8.5))
 
     y_labels = (
@@ -257,7 +320,7 @@ def plot_jsd_heatmap(
 
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
-    logger.info(f"Heatmap enregistrée sous : {output_path}")
+    logger.info("Heatmap visualization saved to target path: %s", output_path)
 
 
 if __name__ == "__main__":
@@ -268,25 +331,25 @@ if __name__ == "__main__":
 
     if not metadata_file.exists() or not positions_file.exists():
         logger.error(
-            "Les fichiers de données metadata.csv ou positions.csv sont introuvables."
+            "Required dataset files metadata.csv or positions.csv were not found."
         )
         exit(1)
 
     players_df = getPlayers(str(metadata_file))
     players_dict = createPlayerDict(players_df)
 
-    # 1. Chargement unique des distributions réelles et identification des FENs communes
+    # 1. Single-pass extraction of ground-truth move distributions and common FEN filtering
     real_distributions, common_fens = extract_player_real_distributions(
         positions_file, players_dict
     )
 
     if not common_fens:
         logger.error(
-            "Aucune position (FEN) commune à tous les joueurs n'a été trouvée."
+            "No common board positions (FENs) shared across all subjects were identified."
         )
         exit(1)
 
-    # 2. Heatmap Inter-Joueurs Réels (Vérité terrain)
+    # 2. Inter-Subject Empirical Behavior Heatmap (Ground Truth baseline)
     inter_matrix, player_names = build_inter_player_ground_truth_matrix(
         real_distributions, common_fens, players_dict
     )
@@ -299,15 +362,19 @@ if __name__ == "__main__":
         is_inter_player=True,
     )
 
-    # 3. Génération des Heatmaps pour CHAQUE modèle présent dans PREDICTION_FILES
+    # 3. Model Alignment Matrix Generation across candidate architectures
     for model_name, path in PREDICTION_FILES.items():
         if not path.exists():
             logger.warning(
-                f"Fichier introuvable pour le modèle '{model_name}' : {path}, ignoré."
+                "Prediction record missing for model '%s' at path: %s. Skipping.",
+                model_name,
+                path,
             )
             continue
 
-        logger.info(f"Génération de la heatmap pour le modèle : {model_name}")
+        logger.info(
+            "Generating stylistic alignment heatmap for candidate model: %s", model_name
+        )
 
         model_matrix, _ = build_model_vs_player_matrix(
             path, real_distributions, common_fens, players_dict

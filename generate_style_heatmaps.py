@@ -1,7 +1,7 @@
 """
-Script for generating stylistic alignment heatmaps between model-conditioned
-predicted move transitions and ground-truth human player board transitions.
-Leverages a unified GlobalStyleSpace (AutoEncoder + cuML UMAP + Discrete Grid JSD)[cite: 1, 2].
+Main evaluation pipeline for constructing stylistic alignment heatmaps between
+model-conditioned move transitions and ground-truth human player board state transitions.
+Leverages a unified GlobalStyleSpace manifold (Autoencoder + cuML UMAP + Discrete Grid JSD).
 """
 
 import gc
@@ -26,10 +26,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path("figures")
-DATA_DIR = Path("data")
+OUTPUT_DIR: Path = Path("figures")
+DATA_DIR: Path = Path("data")
 
-PREDICTION_FILES = {
+PREDICTION_FILES: dict[str, Path] = {
     "Maia-2 Baseline": DATA_DIR / "maia2_predictions.csv",
     "Maia-2 FT": DATA_DIR / "maia2_ft_predictions.csv",
     "Maia-2 Nucleus": DATA_DIR / "maia2_nucleus_predictions.csv",
@@ -51,8 +51,10 @@ PREDICTION_FILES = {
 
 
 def set_seed(seed: int = 42) -> None:
-    """
-    Enforces global determinism across Python, NumPy, PyTorch, and CUDA runtime.
+    """Enforce global determinism across Python, NumPy, PyTorch, and CUDA execution contexts.
+
+    Args:
+        seed (int, optional): Integer seed value for pseudo-random number generators. Defaults to 42.
     """
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -71,19 +73,31 @@ def build_global_reference_space(
     memmap_path: str = "data/reference_transitions.dat",
     seed: int = 42,
 ) -> GlobalStyleSpace:
-    """
-    Constructs the global invariant reference space (AutoEncoder + cuML UMAP)[cite: 1, 2]
-    from ground-truth human transitions streamed directly to a memory-mapped file.
+    """Construct the global invariant reference space manifold (Autoencoder + cuML UMAP) from
+    ground-truth human transition representations streamed directly to disk-backed memory-mapped storage.
+
+    Args:
+        positions_file (Path): Path leading to raw position dataset records.
+        players_dict (Dict[str, int]): Subject mapping linking cohort labels to integer indices.
+        device (torch.device): Compute target device (CPU or CUDA GPU) for model execution.
+        memmap_path (str, optional): Target binary storage path for transition vector matrices.
+            Defaults to "data/reference_transitions.dat".
+        seed (int, optional): Random seed parameter for manifold dimensionality reduction. Defaults to 42.
+
+    Returns:
+        GlobalStyleSpace: Instance of the fitted reference manifold pipeline.
     """
     if Path(memmap_path).exists():
         logger.info(
-            f"Existing reference binary found at {memmap_path}. Loading memory-mapped space..."
+            f"Existing reference binary detected at target path: {memmap_path}. Loading memory-mapped space."
         )
-        # Count rows based on existing file size: file_size_bytes / (2304 float32 values * 4 bytes)
+        # Infer row dimension count from disk file byte allocation size
         file_bytes = os.path.getsize(memmap_path)
         written_count = file_bytes // (2304 * 4)
     else:
-        logger.info("Scanning position dataset to compute memory allocation size...")
+        logger.info(
+            "Scanning position dataset to calculate binary disk storage allocation bounds..."
+        )
         lazy_pos = pl.scan_csv(positions_file)
         valid_indices = set(players_dict.values())
 
@@ -93,7 +107,9 @@ def build_global_reference_space(
             .collect()
             .item()
         )
-        logger.info(f"Total candidate reference positions: {total_positions}")
+        logger.info(
+            f"Total candidate reference positions identified: {total_positions}"
+        )
 
         os.makedirs(os.path.dirname(memmap_path), exist_ok=True)
         fp = np.memmap(
@@ -103,7 +119,7 @@ def build_global_reference_space(
         written_count = 0
         player_pbar = tqdm.tqdm(
             players_dict.items(),
-            desc="Streaming Reference Transitions to Disk",
+            desc="Streaming Reference Transitions to Disk Storage",
             unit="player",
         )
 
@@ -128,7 +144,7 @@ def build_global_reference_space(
         del fp
         gc.collect()
         logger.info(
-            f"Flushed {written_count} valid reference transition vectors to {memmap_path}."
+            f"Flushed {written_count} valid reference transition vectors to storage location: {memmap_path}"
         )
 
     ref_memmap = np.memmap(
@@ -150,9 +166,16 @@ def extract_player_transition_matrices(
     prediction_file: Path,
     target_player_index: int,
 ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
-    """
-    Extracts transition vector arrays for a model conditioned on target_player_index
-    evaluated against every real target player dataset[cite: 1, 2].
+    """Extract transition vector arrays for a candidate model conditioned on a specific subject index,
+    evaluated against real ground-truth human decision records.
+
+    Args:
+        prediction_file (Path): File system path leading to target prediction CSV file.
+        target_player_index (int): Integer identifier corresponding to conditioned subject profile.
+
+    Returns:
+        Dict[int, Tuple[np.ndarray, np.ndarray]]: Dictionary mapping subject index to paired
+            NumPy arrays containing empirical ground-truth and predicted model transition vectors.
     """
     lazy_df = pl.scan_csv(prediction_file)
     player_data = (
@@ -198,9 +221,17 @@ def build_model_vs_player_style_matrix(
     global_space: GlobalStyleSpace,
     players_dict: dict[str, int],
 ) -> tuple[np.ndarray, list[str]]:
-    """
-    Computes the NxN Stylistic JSD divergence matrix comparing model outputs[cite: 1, 2]
-    conditioned on Player i against real ground-truth transitions of Player j[cite: 1, 2].
+    """Compute the square stylistic JSD divergence matrix comparing model predictions conditioned
+    on subject profile i against ground-truth empirical transitions of subject profile j.
+
+    Args:
+        model_predictions_file (Path): File path pointing to evaluation prediction data.
+        global_space (GlobalStyleSpace): Pre-fitted global style reference manifold.
+        players_dict (Dict[str, int]): Subject mapping dictionary linking cohort names to indices.
+
+    Returns:
+        Tuple[np.ndarray, List[str]]: Asymmetric matrix of pairwise stylistic JSD divergence values
+            and list of ordered subject cohort labels.
     """
     player_names = list(players_dict.keys())
     n_players = len(player_names)
@@ -211,7 +242,7 @@ def build_model_vs_player_style_matrix(
     pbar = tqdm.tqdm(
         enumerate(players_dict.items()),
         total=n_players,
-        desc="Processing Model vs. Player Matrix",
+        desc="Computing Model vs. Player Matrix",
         unit="model_cond",
         leave=False,
     )
@@ -219,7 +250,7 @@ def build_model_vs_player_style_matrix(
     for i, (model_player_name, model_p_idx) in pbar:
         pbar.set_postfix({"conditioned_on": model_player_name})
 
-        # Load predicted moves by the model conditioned on player_i
+        # Filter candidate predictions generated by model conditioned on profile i
         model_data = (
             lazy_df.filter(pl.col("player_index") == model_p_idx)
             .select(["fen", "predicted_move"])
@@ -284,8 +315,16 @@ def plot_jsd_heatmap(
     y_label: str = "Model Conditioned Player",
     is_inter_player: bool = False,
 ) -> None:
-    """
-    Generates and saves publication-quality stylistic alignment heatmaps.
+    """Generate and export publication-ready stylistic alignment heatmap visualizations.
+
+    Args:
+        jsd_matrix (np.ndarray): 2D square array containing calculated pairwise JSD divergence metrics.
+        player_names (List[str]): Ordered subject cohort names for axis labelling.
+        output_path (Path): Destination file system path for exported figure format.
+        title (str): Descriptive plot title.
+        y_label (str, optional): Vertical axis label string. Defaults to "Model Conditioned Player".
+        is_inter_player (bool, optional): Configuration flag switching color map schemes for
+            inter-human baseline comparisons. Defaults to False.
     """
     plt.figure(figsize=(11, 8.5))
 
@@ -315,34 +354,36 @@ def plot_jsd_heatmap(
 
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
-    logger.info(f"Heatmap successfully saved to: {output_path}")
+    logger.info(
+        f"Heatmap visualization successfully saved to destination path: {output_path}"
+    )
 
 
 if __name__ == "__main__":
-    GLOBAL_SEED = 42
+    GLOBAL_SEED: int = 42
     set_seed(GLOBAL_SEED)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     metadata_file = DATA_DIR / "metadata.csv"
     positions_file = DATA_DIR / "positions.csv"
 
     if not metadata_file.exists() or not positions_file.exists():
         logger.error(
-            "Required dataset files (metadata.csv or positions.csv) were not found."
+            "Required dataset dependency files (metadata.csv or positions.csv) were not found."
         )
         exit(1)
 
     players_df = getPlayers(str(metadata_file))
     players_dict = createPlayerDict(players_df)
 
-    # 1. Construct the invariant global style space (AutoEncoder + cuML UMAP)[cite: 1, 2]
+    # 1. Construct the invariant global reference manifold space (Autoencoder + cuML UMAP)
     global_space = build_global_reference_space(
         positions_file, players_dict, device, seed=GLOBAL_SEED
     )
 
-    # 2. Iterate through all model prediction CSV files and generate stylistic heatmaps
+    # 2. Iterate through all model prediction evaluation files and compute stylistic heatmaps
     models_pbar = tqdm.tqdm(
         PREDICTION_FILES.items(),
         desc="Generating Stylistic Alignment Heatmaps",
@@ -352,12 +393,14 @@ if __name__ == "__main__":
     for model_name, path in models_pbar:
         if not path.exists():
             logger.warning(
-                f"Prediction file missing for model '{model_name}': {path}. Skipping."
+                f"Prediction record missing for candidate architecture '{model_name}': {path}. Skipping evaluation."
             )
             continue
 
         models_pbar.set_postfix({"current_model": model_name})
-        logger.info(f"Generating stylistic heatmap matrix for model: {model_name}")
+        logger.info(
+            f"Generating stylistic heatmap matrix for candidate model: {model_name}"
+        )
 
         model_matrix, player_names = build_model_vs_player_style_matrix(
             path, global_space, players_dict

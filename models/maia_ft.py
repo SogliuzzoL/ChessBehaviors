@@ -1,3 +1,10 @@
+"""
+Subject-level fine-tuning module for adapting the Maia-2 architecture using dynamic player embeddings.
+"""
+
+from collections.abc import Callable
+from typing import Any
+
 import chess
 import polars as pl
 import torch
@@ -18,21 +25,52 @@ from models.embeddings import DynamicPlayerEmbedding
 
 
 class Maia2FineTuned(ChessModel):
-    def __init__(self, model, n_players: int, pruning_fn=None):
+    """Fine-tuned variant of the Maia-2 chess architecture incorporating subject-specific embeddings.
+
+    Adapts the base model to individual decision-making styles by optimizing dynamic player
+    embedding vectors while keeping the backbone network parameters frozen. Supports joint
+    loss minimization incorporating cross-entropy policy loss and L2 anchor regularization.
+
+    Attributes:
+        model: Underlying pre-trained Maia-2 neural execution model.
+        prepared: Pre-allocated inference context structures.
+        pruning_fn (Optional[Callable[[Dict[str, float]], List[str]]]): Optional policy pruning transformation.
+        all_moves_dict (Dict[str, int]): Vocabulary mapping UCI move strings to integer indices.
+        elo_dict (Dict[Any, Any]): Subject rating metadata dictionary.
+        max_maia_idx (int): Upper boundary index threshold for base Maia-2 rating embeddings.
+        custom_emb (DynamicPlayerEmbedding): Dynamic embedding layer managing subject vectors.
+    """
+
+    def __init__(
+        self,
+        model: object,
+        n_players: int,
+        pruning_fn: Callable[[dict[str, float]], list[str]] | None = None,
+    ) -> None:
+        """Initialize the fine-tuned Maia-2 model instance.
+
+        Args:
+            model (object): Pre-trained Maia-2 model architecture instance.
+            n_players (int): Total number of distinct subject profiles to accommodate.
+            pruning_fn (Optional[Callable[[Dict[str, float]], List[str]]], optional): Function
+                executing policy space pruning. Defaults to None.
+        """
         self.model = model
         self.prepared = inference.prepare()
         self.pruning_fn = pruning_fn
 
         all_moves = get_all_possible_moves()
-        self.all_moves_dict = {move: i for i, move in enumerate(all_moves)}
-        self.elo_dict = create_elo_dict()
+        self.all_moves_dict: dict[str, int] = {
+            move: i for i, move in enumerate(all_moves)
+        }
+        self.elo_dict: dict[Any, Any] = create_elo_dict()
 
         original_emb = getattr(
             self.model,
             "elo_embedding",
             getattr(getattr(self.model, "net", None), "elo_embedding", None),
         )
-        self.max_maia_idx = original_emb.num_embeddings - 1
+        self.max_maia_idx: int = original_emb.num_embeddings - 1
 
         self.custom_emb = DynamicPlayerEmbedding(original_emb, n_players)
         if hasattr(self.model, "elo_embedding"):
@@ -40,7 +78,12 @@ class Maia2FineTuned(ChessModel):
         else:
             self.model.net.elo_embedding = self.custom_emb
 
-    def reset_player_embedding(self, player_index: int):
+    def reset_player_embedding(self, player_index: int) -> None:
+        """Reset specified subject embedding vector to default baseline initialization.
+
+        Args:
+            player_index (int): Integer identifier for target subject cohort.
+        """
         with torch.no_grad():
             init_weights = (
                 self.custom_emb.base_embeddings.weight[self.max_maia_idx]
@@ -58,7 +101,26 @@ class Maia2FineTuned(ChessModel):
         batch_size: int = 64,
         lr: float = 1e-2,
         l2_anchor_weight: float = 1e-5,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
+        """Optimize subject embedding vector on observational training positions.
+
+        Executes iterative parameter updating for the target subject embedding vector using
+        AdamW optimization and cosine annealing learning rate schedules. Evaluates intermediate
+        convergence against validation sets if provided.
+
+        Args:
+            player_index (int): Target subject profile identifier.
+            train_pos (pl.DataFrame): Dataframe containing training board positions.
+            test_pos (Optional[pl.DataFrame], optional): Optional validation board positions. Defaults to None.
+            epochs (int, optional): Optimization epoch count. Defaults to 5.
+            batch_size (int, optional): Training mini-batch size. Defaults to 64.
+            lr (float, optional): Initial peak learning rate. Defaults to 1e-2.
+            l2_anchor_weight (float, optional): Penalty weight for L2 distance regularization to base embedding.
+                Defaults to 1e-5.
+
+        Returns:
+            List[Dict[str, Any]]: History logs containing batch-level and epoch-level loss metrics.
+        """
         if len(train_pos) == 0:
             return []
 
@@ -96,13 +158,13 @@ class Maia2FineTuned(ChessModel):
                 .clone()
             )
 
-        history = []
+        history: list[dict[str, Any]] = []
         global_step = 0
 
         total_batches = epochs * len(dataloader)
         train_pbar = tqdm.tqdm(
             total=total_batches,
-            desc=f"Fit Player {player_index}",
+            desc=f"Optimizing Subject {player_index}",
             leave=False,
             unit="batch",
         )
@@ -175,7 +237,7 @@ class Maia2FineTuned(ChessModel):
                 )
                 train_pbar.update(1)
 
-            epoch_log = {
+            epoch_log: dict[str, Any] = {
                 "type": "epoch",
                 "player_index": player_index,
                 "epoch": epoch + 1,
@@ -184,6 +246,7 @@ class Maia2FineTuned(ChessModel):
                 "avg_anchor_loss": running_anchor_loss / steps,
             }
 
+            # Evaluate performance on validation dataset partition
             if test_pos is not None and len(test_pos) > 0:
                 self.model.eval()
                 test_df = (
@@ -239,12 +302,24 @@ class Maia2FineTuned(ChessModel):
     def predict(
         self, board: chess.Board, player_index: int = 0
     ) -> tuple[dict[str, float], float]:
+        """Perform subject-conditioned forward inference over a board position.
+
+        Args:
+            board (chess.Board): Target chess board state instance.
+            player_index (int, optional): Subject profile identifier for conditional embedding lookup.
+                Defaults to 0.
+
+        Returns:
+            Tuple[Dict[str, float], float]: Tuple containing normalized move policy distribution
+                and scalar position evaluation score.
+        """
         device = next(self.model.parameters()).device
         virtual_elo_idx = self.max_maia_idx + 1 + player_index
 
         fen = board.fen()
         black_flag = False
 
+        # Apply spatial perspective normalization when Black is active player
         if fen.split(" ")[1] == "b":
             proc_board = chess.Board(fen).mirror()
             black_flag = True
@@ -255,6 +330,7 @@ class Maia2FineTuned(ChessModel):
         elos_self = torch.tensor([virtual_elo_idx], device=device)
         elos_oppo = torch.tensor([virtual_elo_idx], device=device)
 
+        # Build legal move mask in tensor representation
         legal_moves = torch.zeros(len(self.all_moves_dict), device=device)
         legal_indices = [
             self.all_moves_dict[m.uci()]
@@ -274,8 +350,9 @@ class Maia2FineTuned(ChessModel):
             if black_flag:
                 val = 1 - val
 
+        # Map predictions back to original board orientation and UCI move strings
         all_moves_reversed = {v: k for k, v in self.all_moves_dict.items()}
-        raw_moves = {}
+        raw_moves: dict[str, float] = {}
         for idx in legal_indices:
             move_uci = all_moves_reversed[idx]
             if black_flag:
@@ -285,10 +362,11 @@ class Maia2FineTuned(ChessModel):
         raw_moves = dict(sorted(raw_moves.items(), key=lambda x: x[1], reverse=True))
 
         legal_uci_moves = {m.uci() for m in board.legal_moves}
-        legal_moves_dict = {
+        legal_moves_dict: dict[str, float] = {
             move: score for move, score in raw_moves.items() if move in legal_uci_moves
         }
 
+        # Apply optional policy action space pruning
         if self.pruning_fn and legal_moves_dict:
             moves_pruned = self.pruning_fn(legal_moves_dict)
             legal_moves_dict = {
@@ -297,6 +375,7 @@ class Maia2FineTuned(ChessModel):
                 if move in legal_moves_dict
             }
 
+        # Renormalize posterior legal move probability distribution
         total = sum(legal_moves_dict.values())
         if total > 0:
             legal_moves_dict = {

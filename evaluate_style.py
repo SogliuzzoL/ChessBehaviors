@@ -1,6 +1,6 @@
 """
-Main evaluation script for computing stylistic divergence (AE + cuML UMAP + JSD)
-across model variants and historical world chess champions with memory-mapped disk storage.
+Main evaluation pipeline for quantifying stylistic divergence (Autoencoder + cuML UMAP + JSD)
+across model variants and historical world chess champions utilizing memory-mapped disk storage.
 """
 
 import gc
@@ -8,6 +8,7 @@ import logging
 import os
 import random
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -23,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-PREDICTION_FILES = {
+PREDICTION_FILES: dict[str, str] = {
     "Maia-2 Baseline": "data/maia2_predictions.csv",
     "Maia-2 FT": "data/maia2_ft_predictions.csv",
     "Maia-2 Nucleus": "data/maia2_nucleus_predictions.csv",
@@ -44,6 +45,11 @@ PREDICTION_FILES = {
 
 
 def set_seed(seed: int = 42) -> None:
+    """Fix random seeds across all dependencies to ensure deterministic experiment reproducibility.
+
+    Args:
+        seed (int, optional): Random seed value. Defaults to 42.
+    """
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
@@ -61,7 +67,23 @@ def build_global_reference_space(
     memmap_path: str = "data/reference_transitions.dat",
     seed: int = 42,
 ) -> GlobalStyleSpace:
-    logger.info("Scanning position dataset to count total valid positions...")
+    """Construct a shared low-dimensional global style manifold from raw position datasets.
+
+    Extracts high-dimensional transition vectors across all player cohorts, streams them
+    to a disk-backed memory-mapped array, and fits an Autoencoder followed by a UMAP projection space.
+
+    Args:
+        positions_file (str): Path to CSV containing candidate position representations.
+        players_dict (Dict[str, int]): Map of subject identifiers to numerical cohort indices.
+        device (torch.device): PyTorch compute hardware target (CPU or CUDA GPU).
+        memmap_path (str, optional): Target binary file path for memory-mapped storage.
+            Defaults to "data/reference_transitions.dat".
+        seed (int, optional): Random seed for transformation space fitting. Defaults to 42.
+
+    Returns:
+        GlobalStyleSpace: Fitted latent manifold pipeline for downstream style projections.
+    """
+    logger.info("Scanning position dataset to determine global cohort record volume...")
     lazy_pos = pl.scan_csv(positions_file)
     valid_indices = set(players_dict.values())
 
@@ -71,7 +93,9 @@ def build_global_reference_space(
         .collect()
         .item()
     )
-    logger.info(f"Total reference positions to process: {total_positions}")
+    logger.info(
+        "Identified %d reference positions for manifold construction.", total_positions
+    )
 
     os.makedirs(os.path.dirname(memmap_path), exist_ok=True)
     fp = np.memmap(
@@ -106,7 +130,11 @@ def build_global_reference_space(
     del fp
     gc.collect()
 
-    logger.info(f"Flushed {written_count} valid transition vectors to {memmap_path}.")
+    logger.info(
+        "Successfully persisted %d valid transition vectors to memory-mapped storage: %s",
+        written_count,
+        memmap_path,
+    )
 
     ref_memmap = np.memmap(
         memmap_path, dtype="float32", mode="r", shape=(written_count, 2304)
@@ -118,7 +146,7 @@ def build_global_reference_space(
 
     del ref_memmap
     gc.collect()
-    torch.cuda.empty_cache()  # <-- Crucial VRAM cleanup after fitting
+    torch.cuda.empty_cache()  # Explicit GPU VRAM cleanup post-fitting procedure
 
     return global_space
 
@@ -129,15 +157,32 @@ def evaluate_model_style(
     players_dict: dict[str, int],
     global_space: GlobalStyleSpace,
 ) -> None:
+    """Evaluate stylistic divergence between human empirical moves and model predictions.
+
+    Maps ground-truth human transitions and model-predicted transitions into the global
+    style space to compute Jensen-Shannon Divergence across low-dimensional projections.
+
+    Args:
+        model_name (str): Identifier for candidate evaluation architecture.
+        csv_path (str): File system path leading to model prediction records.
+        players_dict (Dict[str, int]): Map of subject names to numerical cohort indices.
+        global_space (GlobalStyleSpace): Fitted reference style manifold.
+    """
     path = Path(csv_path)
     if not path.exists():
-        logger.warning(f"Prediction file not found: {csv_path}. Skipping evaluation.")
+        logger.warning(
+            "Prediction record missing at target path: %s. Skipping model evaluation.",
+            csv_path,
+        )
         return
 
-    logger.info(f"Evaluating stylistic divergence for model: {model_name}")
+    logger.info(
+        "Initiating stylistic divergence evaluation pipeline for candidate model: %s",
+        model_name,
+    )
     lazy_df = pl.scan_csv(csv_path)
 
-    results = []
+    results: list[dict[str, Any]] = []
     player_pbar = tqdm.tqdm(
         players_dict.items(),
         desc=f"Evaluating {model_name}",
@@ -158,17 +203,17 @@ def evaluate_model_style(
             gc.collect()
             continue
 
-        fens = player_data["fen"].to_list()
-        player_moves = player_data["move"].to_list()
-        model_moves = player_data["predicted_move"].to_list()
+        fens: list[str] = player_data["fen"].to_list()
+        player_moves: list[str] = player_data["move"].to_list()
+        model_moves: list[str] = player_data["predicted_move"].to_list()
 
-        p_vecs = []
-        m_vecs = []
+        p_vecs: list[np.ndarray] = []
+        m_vecs: list[np.ndarray] = []
 
         encoding_pbar = tqdm.tqdm(
             zip(fens, player_moves, model_moves),
             total=len(fens),
-            desc=f"  -> Processing transitions [{player_name}]",
+            desc=f"  -> Extracting transition representations [{player_name}]",
             leave=False,
             unit="pos",
         )
@@ -210,7 +255,7 @@ def evaluate_model_style(
 
         del player_data, fens, player_moves, model_moves, p_vecs, m_vecs, p_arr, m_arr
         gc.collect()
-        torch.cuda.empty_cache()  # <-- Clear GPU memory per player loop
+        torch.cuda.empty_cache()  # Explicit GPU VRAM cleanup per subject iteration
 
     if results:
         output_df = pl.DataFrame(results)
@@ -223,14 +268,17 @@ def evaluate_model_style(
         )
         out_file = f"data/{clean_name}_style.csv"
         output_df.write_csv(out_file)
-        logger.info(f"Stylistic evaluation results saved to: {out_file}")
+        logger.info(
+            "Stylistic divergence evaluation metrics successfully exported to: %s",
+            out_file,
+        )
 
 
 if __name__ == "__main__":
-    GLOBAL_SEED = 42
+    GLOBAL_SEED: int = 42
     set_seed(GLOBAL_SEED)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     players = getPlayers("data/metadata.csv")
     players_dict = createPlayerDict(players)
@@ -241,7 +289,7 @@ if __name__ == "__main__":
 
     models_pbar = tqdm.tqdm(
         PREDICTION_FILES.items(),
-        desc="Overall Evaluation Progress (Models)",
+        desc="Overall Model Evaluation Pipeline Progress",
         unit="model",
     )
 

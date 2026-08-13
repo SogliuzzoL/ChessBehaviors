@@ -1,19 +1,32 @@
+"""
+Data preprocessing and splitting utilities for parsing PGN games, extracting positional
+observations, mapping subject cohorts, and preparing deterministic cross-validation folds.
+"""
+
 import os
 import random
 
 import chess
-import chess.pgn as pgn
 import numpy as np
 import polars as pl
 import torch
 import tqdm
+from chess import pgn
 
 
-def getPGNmetadata(file_path: str, user_id: str, game_id: str) -> dict | None:
+def getPGNmetadata(file_path: str, user_id: str, game_id: str) -> dict[str, str] | None:
+    """Extract game metadata headers from a target Portable Game Notation (PGN) record.
+
+    Args:
+        file_path (str): File system path leading to target PGN file.
+        user_id (str): User identifier corresponding to player cohort directory.
+        game_id (str): Unique game instance identifier.
+
+    Returns:
+        Optional[Dict[str, str]]: Dictionary containing extracted header fields,
+            or None if record parsing fails.
     """
-    Extracts metadata from a PGN file.
-    """
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         game = pgn.read_game(f)
         if game is None:
             return None
@@ -29,8 +42,16 @@ def getPGNmetadata(file_path: str, user_id: str, game_id: str) -> dict | None:
 
 
 def getPlayers(file_path: str, game_count_threshold: int = 2000) -> pl.DataFrame:
-    """
-    Returns a DataFrame of players with a game count above the threshold.
+    """Identify player subjects exceeding specified observational game activity thresholds.
+
+    Args:
+        file_path (str): File path to metadata catalog containing player match histories.
+        game_count_threshold (int, optional): Minimum required observations per subject cohort.
+            Defaults to 2000.
+
+    Returns:
+        pl.DataFrame: Filtered DataFrame containing player identifiers and game counts
+            sorted descending.
     """
     metadata = pl.read_csv(file_path, columns=["White", "Black"])
 
@@ -47,17 +68,28 @@ def getPlayers(file_path: str, game_count_threshold: int = 2000) -> pl.DataFrame
 
 
 def createPlayerDict(df: pl.DataFrame) -> dict[str, int]:
+    """Construct ordinal subject index mapping from filtered player cohorts.
+
+    Args:
+        df (pl.DataFrame): DataFrame containing unique subject cohort names.
+
+    Returns:
+        Dict[str, int]: Dictionary mapping player name strings to categorical integer indices.
     """
-    Returns a dictionary mapping player names to their index in the DataFrame.
-    """
-    return dict(zip(df["player"], [i for i in range(len(df))]))
+    return dict(zip(df["player"], list(range(len(df)))))
 
 
 def filterMetadataByPlayer(
     metadata: pl.DataFrame, player_dict: dict[str, int]
 ) -> pl.DataFrame:
-    """
-    Returns a DataFrame filtered to include only games played by players in the player_dict.
+    """Filter metadata catalog to retain matches involving targeted player cohorts.
+
+    Args:
+        metadata (pl.DataFrame): Master metadata DataFrame.
+        player_dict (Dict[str, int]): Map of target subject profiles to categorical indices.
+
+    Returns:
+        pl.DataFrame: Subsampled metadata DataFrame.
     """
     return metadata.filter(
         pl.col("White").is_in(player_dict) | pl.col("Black").is_in(player_dict)
@@ -67,21 +99,34 @@ def filterMetadataByPlayer(
 def flattenData(
     metadata: pl.DataFrame, data_dir: str, player_dict: dict[str, int]
 ) -> pl.DataFrame:
+    """Flatten game PGN records into individual ply-level positional observations.
+
+    Extracts legal position state-action pairs (FEN, move) and maps participating
+    subjects to their respective categorical indices.
+
+    Args:
+        metadata (pl.DataFrame): Catalog of candidate game records.
+        data_dir (str): Base directory storing user PGN files.
+        player_dict (Dict[str, int]): Mapping of target subject names to categorical indices.
+
+    Returns:
+        pl.DataFrame: Polars DataFrame where each row represents a single decision point.
     """
-    Flattens the metadata into a DataFrame of positions, with player names replaced by their index in the player_dict.
-    """
-    positions = []
-    games_id = []
-    for row in tqdm(metadata.iter_rows(named=True), total=len(metadata)):
+    positions: list[dict[str, str | int]] = []
+    processed_games: list[str] = []
+
+    for row in tqdm.tqdm(
+        metadata.iter_rows(named=True), total=len(metadata), desc="Flattening Positions"
+    ):
         game_id = row["game_id"]
         user_id = row["user_id"]
         white = row["White"]
         black = row["Black"]
         result = row["Result"]
 
-        if game_id in games_id:
+        if game_id in processed_games:
             continue
-        games_id.append(game_id)
+        processed_games.append(game_id)
 
         white_index = player_dict.get(white, -1)
         black_index = player_dict.get(black, -1)
@@ -89,7 +134,11 @@ def flattenData(
         if white_index == -1 and black_index == -1:
             continue
 
-        with open(f"{data_dir}/{user_id}/{game_id}.pgn", "r") as f:
+        file_path = os.path.join(data_dir, str(user_id), f"{game_id}.pgn")
+        if not os.path.exists(file_path):
+            continue
+
+        with open(file_path, "r", encoding="utf-8") as f:
             game = pgn.read_game(f)
             if game is None:
                 continue
@@ -104,6 +153,7 @@ def flattenData(
                 turn = board.turn
                 fen = board.fen()
                 board.push(move)
+
                 position = {
                     "game_id": game_id,
                     "turn": "white" if turn == chess.WHITE else "black",
@@ -118,11 +168,18 @@ def flattenData(
                     position["player_index"] = black_index
                     positions.append(position)
 
-    df = pl.DataFrame(positions)
-    return df
+    return pl.DataFrame(positions)
 
 
-def set_seed(seed: int = 42):
+def set_seed(seed: int = 42) -> None:
+    """Enforce strict experimental reproducibility across execution environments.
+
+    Configures global random seeds for Python native built-ins, NumPy, PyTorch CPU,
+    and PyTorch CUDA backends while forcing deterministic cuDNN algorithms.
+
+    Args:
+        seed (int, optional): Global seed integer. Defaults to 42.
+    """
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
@@ -134,13 +191,26 @@ def set_seed(seed: int = 42):
 
 
 def split_games_into_folds(
-    game_ids: list, n_splits: int = 5, seed: int = 42
-) -> list[list]:
+    game_ids: list[str], n_splits: int = 5, seed: int = 42
+) -> list[list[str]]:
+    """Partition unique game identifiers into balanced cross-validation folds.
+
+    Ensures zero data leakage between training and evaluation splits by partitioning
+    at the game entity level rather than individual position observations.
+
+    Args:
+        game_ids (List[str]): Unique game identifier strings.
+        n_splits (int, optional): K-fold partition split count. Defaults to 5.
+        seed (int, optional): Seed establishing deterministic shuffling order. Defaults to 42.
+
+    Returns:
+        List[List[str]]: List of lists containing partitioned game IDs for each fold.
+    """
     shuffled_games = game_ids.copy()
     random.seed(seed)
     random.shuffle(shuffled_games)
 
-    folds = [[] for _ in range(n_splits)]
+    folds: list[list[str]] = [[] for _ in range(n_splits)]
     for idx, game_id in enumerate(shuffled_games):
         folds[idx % n_splits].append(game_id)
     return folds

@@ -1,4 +1,10 @@
+"""
+Cross-validation evaluation pipeline for assessing the Maia-2 architecture enhanced
+with subject-level fine-tuning, nucleus pruning, and Monte Carlo Tree Search (MCTS) optimization.
+"""
+
 import logging
+from typing import Any
 
 import chess
 import pandas as pd
@@ -10,65 +16,138 @@ from models import Maia2FineTuned, MCTSModelWrapper
 from utils.data import createPlayerDict, getPlayers, set_seed, split_games_into_folds
 from utils.pruning import nucleus_prune
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-N = 50
+SEARCH_ITERATIONS: int = 50
 
-if __name__ == "__main__":
-    SEED = 42
-    set_seed(SEED)
 
-    raw_maia_model = model.from_pretrained(type="rapid", device="gpu")
-    players = getPlayers("data/metadata.csv")
-    players_dict = createPlayerDict(players)
-    positions = pl.read_csv("data/positions.csv")
+def evaluate_maia2_ft_nucleus_mcts(
+    metadata_path: str = "data/metadata.csv",
+    positions_path: str = "data/positions.csv",
+    max_iterations: int = SEARCH_ITERATIONS,
+    timeout: float = 1.0,
+    top_p: float = 0.95,
+    seed: int = 42,
+    device: str = "gpu",
+) -> None:
+    """Evaluate candidate move accuracy and posterior policy distributions using a fine-tuned Maia-2 model
+    integrated with nucleus pruning and MCTS search over a k-fold cross-validation scheme.
 
-    prune_fn = lambda moves: nucleus_prune(moves, top_p=0.95)
+    Args:
+        metadata_path (str, optional): Path leading to subject metadata catalog.
+            Defaults to "data/metadata.csv".
+        positions_path (str, optional): Path leading to input positional observations CSV.
+            Defaults to "data/positions.csv".
+        max_iterations (int, optional): Maximum simulation budget per search tree node expansion.
+            Defaults to SEARCH_ITERATIONS.
+        timeout (float, optional): Maximum search execution time budget in seconds per board state.
+            Defaults to 1.0.
+        top_p (float, optional): Cumulative probability threshold limit for nucleus action pruning.
+            Defaults to 0.95.
+        seed (int, optional): Global seed value establishing experimental determinism.
+            Defaults to 42.
+        device (str, optional): Target compute hardware backend (e.g., "gpu", "cpu").
+            Defaults to "gpu".
+    """
+    set_seed(seed)
+
+    logger.info("Initializing pre-trained Maia-2 rapid base model architecture...")
+    raw_maia_model = model.from_pretrained(type="rapid", device=device)
+
+    logger.info(
+        "Loading subject metadata catalog and positional observation dataset..."
+    )
+    players = getPlayers(metadata_path)
+    players_dict: dict[str, int] = createPlayerDict(players)
+    positions = pl.read_csv(positions_path)
+
+    # Establish nucleus pruning criteria over policy output distribution
+    prune_fn = lambda moves: nucleus_prune(moves, top_p=top_p)
+
+    logger.info(
+        "Instantiating fine-tuned Maia-2 model with nucleus pruning (top_p=%.2f)...",
+        top_p,
+    )
     maia2_ft_model = Maia2FineTuned(
         model=raw_maia_model, n_players=len(players_dict), pruning_fn=prune_fn
     )
+
+    logger.info(
+        "Instantiating MCTS search agent (max_iterations=%d, timeout=%.1fs)...",
+        max_iterations,
+        timeout,
+    )
     mcts_agent = MCTSModelWrapper(
-        base_model=maia2_ft_model, max_iterations=N, timeout=1.0
+        base_model=maia2_ft_model, max_iterations=max_iterations, timeout=timeout
     )
 
-    predictions = []
-    accuracies = []
+    predictions: list[pd.DataFrame] = []
+    accuracies: list[dict[str, Any]] = []
 
-    for player_name, player_index in tqdm.tqdm(players_dict.items(), desc="Players"):
+    player_pbar = tqdm.tqdm(
+        players_dict.items(),
+        desc="Evaluating Subject Cohorts",
+        unit="subject",
+    )
+
+    for player_name, player_index in player_pbar:
         player_positions = positions.filter(pl.col("player_index") == player_index)
-        unique_games = player_positions.select("game_id").unique()["game_id"].to_list()
+        unique_games: list[str] = (
+            player_positions.select("game_id").unique()["game_id"].to_list()
+        )
+
         if not unique_games:
+            logger.warning(
+                "Zero unique games recorded for subject %s (index %d). Skipping evaluation.",
+                player_name,
+                player_index,
+            )
             continue
 
         n_splits = min(5, len(unique_games))
-        game_folds = split_games_into_folds(unique_games, n_splits=n_splits, seed=SEED)
+        game_folds = split_games_into_folds(unique_games, n_splits=n_splits, seed=seed)
 
-        player_preds = []
+        player_preds: list[dict[str, Any]] = []
         correct_count = 0
         total_count = len(player_positions)
 
-        for fold_idx, test_games in enumerate(
-            tqdm.tqdm(game_folds, desc=f"5-Fold CV {player_name}", leave=False)
-        ):
+        fold_pbar = tqdm.tqdm(
+            enumerate(game_folds),
+            total=len(game_folds),
+            desc=f"  -> {n_splits}-Fold CV [{player_name}]",
+            leave=False,
+            unit="fold",
+        )
+
+        for fold_idx, test_games in fold_pbar:
             train_pos = player_positions.filter(~pl.col("game_id").is_in(test_games))
             test_pos = player_positions.filter(pl.col("game_id").is_in(test_games))
 
-            set_seed(SEED + fold_idx)
+            set_seed(seed + fold_idx)
+
+            # Re-initialize player embedding and optimize parameters on the training partition
             maia2_ft_model.reset_player_embedding(player_index)
             maia2_ft_model.fit_player(player_index, train_pos)
 
-            for row in tqdm.tqdm(
+            position_pbar = tqdm.tqdm(
                 test_pos.iter_rows(named=True),
-                desc="Testing",
+                desc="  -> Evaluating test partition",
                 leave=False,
                 total=len(test_pos),
-            ):
-                fen = row["fen"]
-                target_move = row["move"]
+                unit="pos",
+            )
+
+            for row in position_pbar:
+                fen: str = row["fen"]
+                target_move: str = row["move"]
                 board = chess.Board(fen)
 
                 moves_probs, _ = mcts_agent.predict(board)
+
+                # Select mode candidate move corresponding to maximum posterior probability
                 predicted_move = (
                     max(moves_probs.items(), key=lambda x: x[1])[0]
                     if moves_probs
@@ -97,15 +176,40 @@ if __name__ == "__main__":
                 "accuracy": acc,
             }
         )
+
         logger.info(
-            f"Player {player_name} (index {player_index}) 5-Fold CV Accuracy: {acc:.4f}"
+            "Subject %s (index %d) %d-Fold CV prediction accuracy: %.4f",
+            player_name,
+            player_index,
+            n_splits,
+            acc,
         )
 
-    predictions_df = pd.concat(predictions, ignore_index=True)
-    predictions_df.to_csv(
-        f"data/maia2_ft_nucleus_mcts_{N}_predictions.csv", index=False
+    output_predictions_path = (
+        f"data/maia2_ft_nucleus_mcts_{max_iterations}_predictions.csv"
     )
+    output_accuracies_path = (
+        f"data/maia2_ft_nucleus_mcts_{max_iterations}_accuracies.csv"
+    )
+    general_accuracies_path = "data/maia2_ft_nucleus_mcts_accuracies.csv"
 
-    accuracies_df = pl.DataFrame(accuracies)
-    accuracies_df.write_csv(f"data/maia2_ft_nucleus_mcts_{N}_accuracies.csv")
-    accuracies_df.write_csv("data/maia2_ft_nucleus_mcts_accuracies.csv")
+    if predictions:
+        predictions_df = pd.concat(predictions, ignore_index=True)
+        predictions_df.to_csv(output_predictions_path, index=False)
+        logger.info(
+            "Model predictions successfully exported to: %s", output_predictions_path
+        )
+
+    if accuracies:
+        accuracies_df = pl.DataFrame(accuracies)
+        accuracies_df.write_csv(output_accuracies_path)
+        accuracies_df.write_csv(general_accuracies_path)
+        logger.info(
+            "Subject accuracy metrics successfully exported to: %s and %s",
+            output_accuracies_path,
+            general_accuracies_path,
+        )
+
+
+if __name__ == "__main__":
+    evaluate_maia2_ft_nucleus_mcts()

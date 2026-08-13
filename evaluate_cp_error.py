@@ -14,12 +14,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration des chemins et paramètres Stockfish
-STOCKFISH_PATH = "stockfish"
-SEARCH_DEPTH = 10
-MATE_SCORE_CAP = 10000
+# Engine path specification and search evaluation parameters
+STOCKFISH_PATH: str = "stockfish"
+SEARCH_DEPTH: int = 10
+MATE_SCORE_CAP: int = 10000
 
-PREDICTION_FILES = {
+PREDICTION_FILES: dict[str, str] = {
     "Maia-2 Baseline": "data/maia2_predictions.csv",
     "Maia-2 FT": "data/maia2_ft_predictions.csv",
     "Maia-2 Nucleus": "data/maia2_nucleus_predictions.csv",
@@ -38,6 +38,7 @@ PREDICTION_FILES = {
     ),
 }
 
+# In-memory memoization table for computed Centipawn Loss values
 cpl_cache: dict[tuple[str, str], float] = {}
 
 
@@ -47,7 +48,22 @@ def get_position_and_move_cpl(
     move_uci: str,
     depth: int = SEARCH_DEPTH,
 ) -> float:
-    """Calcule le Centipawn Loss d'un coup donné à partir d'une FEN avec mise en cache."""
+    r"""Compute the Centipawn Loss (CPL) for a specified move given a board state (FEN).
+
+    Evaluates the optimal engine evaluation versus the evaluation following the candidate
+    move execution. Results are memoized in an in-memory dictionary cache to accelerate
+    subsequent evaluations across redundant state-action pairs.
+
+    Args:
+        engine (chess.engine.SimpleEngine): Initialized UCI chess engine instance.
+        fen (str): Board state formatted as a Forsyth-Edwards Notation string.
+        move_uci (str): Candidate move represented in Universal Chess Interface (UCI) format.
+        depth (int, optional): Fixed engine search depth. Defaults to SEARCH_DEPTH.
+
+    Returns:
+        float: Computed Centipawn Loss $\ge 0.0$. Returns a penalty score of 1000.0 for
+            illegal or null candidate moves.
+    """
     cache_key = (fen, move_uci)
     if cache_key in cpl_cache:
         return cpl_cache[cache_key]
@@ -76,16 +92,28 @@ def evaluate_model_cp_error(
     csv_path: str,
     players_dict: dict[str, int],
     engine: chess.engine.SimpleEngine,
-):
-    """Calcule la CP Error par joueur de manière optimisée."""
+) -> None:
+    """Compute per-subject Centipawn Error (CP Error) for a designated model architecture.
+
+    Quantifies prediction accuracy by evaluating the absolute difference between
+    the mean human subject Centipawn Loss (CPL) and the mean model candidate move CPL.
+
+    Args:
+        model_name (str): Human-readable identifier for the candidate evaluation model.
+        csv_path (str): File system path leading to the model target prediction CSV file.
+        players_dict (Dict[str, int]): Mapping from subject identifiers to cohort indices.
+        engine (chess.engine.SimpleEngine): UCI-compliant chess evaluation engine.
+    """
     path = Path(csv_path)
     if not path.exists():
         logger.warning(
-            f"Fichier de prédictions introuvable : {csv_path}, passage au suivant."
+            f"Prediction record file not found: {csv_path}. Skipping model evaluation for: {model_name}."
         )
         return
 
-    logger.info(f"Évaluation du modèle (Optimisée) : {model_name}")
+    logger.info(
+        f"Initiating optimized Centipawn Error evaluation pipeline for candidate model: {model_name}"
+    )
     lazy_df = pl.scan_csv(csv_path)
     results = []
 
@@ -102,10 +130,10 @@ def evaluate_model_cp_error(
             gc.collect()
             continue
 
-        # Extraction vectorisée des colonnes pour éviter overhead de iter_rows
-        fens = player_data["fen"].to_list()
-        player_moves = player_data["move"].to_list()
-        model_moves = player_data["predicted_move"].to_list()
+        # Vectorized column extraction to eliminate iteration overhead over DataFrame rows
+        fens: list[str] = player_data["fen"].to_list()
+        player_moves: list[str] = player_data["move"].to_list()
+        model_moves: list[str] = player_data["predicted_move"].to_list()
 
         player_cpl_sum = 0.0
         model_cpl_sum = 0.0
@@ -142,20 +170,20 @@ def evaluate_model_cp_error(
         )
         out_file = f"data/{clean_name}_cp_error.csv"
         output_df.write_csv(out_file)
-        logger.info(f"Résultats enregistrés dans : {out_file}")
+        logger.info(f"Evaluation metrics successfully exported to: {out_file}")
 
 
 if __name__ == "__main__":
     players = getPlayers("data/metadata.csv")
     players_dict = createPlayerDict(players)
 
-    logger.info("Initialisation du moteur Stockfish...")
+    logger.info("Initializing Stockfish evaluation engine binary...")
     try:
         engine = chess.engine.SimpleEngine.popen_uci(STOCKFISH_PATH)
     except Exception as e:
         logger.error(
-            f"Impossible d'ouvrir Stockfish depuis '{STOCKFISH_PATH}'. "
-            "Vérifie qu'il est bien installé et accessible dans le PATH."
+            f"Failed to instantiate Stockfish process from binary path '{STOCKFISH_PATH}'. "
+            "Ensure the executable is correctly installed and configured within system PATH."
         )
         raise e
 
@@ -164,4 +192,4 @@ if __name__ == "__main__":
             evaluate_model_cp_error(model_name, path_str, players_dict, engine)
     finally:
         engine.quit()
-        logger.info("Moteur Stockfish fermé avec succès.")
+        logger.info("Stockfish engine process terminated successfully.")
