@@ -8,7 +8,7 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR: Path = Path("data")
 
-PREDICTION_FILES: Dict[str, str] = {
+PREDICTION_FILES: dict[str, str] = {
     "Maia-2 Baseline": "data/maia2_predictions.csv",
     "Maia-2 FT": "data/maia2_ft_predictions.csv",
     "Maia-2 Nucleus": "data/maia2_nucleus_predictions.csv",
@@ -62,7 +62,7 @@ def set_seed(seed: int = 42) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def extract_common_fens(positions_file: Path, players_dict: Dict[str, int]) -> Set[str]:
+def extract_common_fens(positions_file: Path, players_dict: dict[str, int]) -> set[str]:
     """Identify the exact intersection set of board positions (FENs) observed across all player cohorts.
 
     Args:
@@ -86,7 +86,7 @@ def extract_common_fens(positions_file: Path, players_dict: Dict[str, int]) -> S
         .collect()
     )
 
-    common_fens: Set[str] = set(df_counts["fen"].to_list())
+    common_fens: set[str] = set(df_counts["fen"].to_list())
     logger.info(
         "Identified %d mutually observed common FEN positions across all %d subjects.",
         len(common_fens),
@@ -97,8 +97,8 @@ def extract_common_fens(positions_file: Path, players_dict: Dict[str, int]) -> S
 
 def build_global_reference_space_common_fens(
     positions_file: Path,
-    common_fens: Set[str],
-    players_dict: Dict[str, int],
+    common_fens: set[str],
+    players_dict: dict[str, int],
     device: torch.device,
     memmap_path: Path = DATA_DIR / "reference_transitions_common_fens.dat",
     seed: int = 42,
@@ -205,8 +205,8 @@ def build_global_reference_space_common_fens(
 def evaluate_model_style_common_fens(
     model_name: str,
     csv_path: str,
-    common_fens: Set[str],
-    players_dict: Dict[str, int],
+    common_fens: set[str],
+    players_dict: dict[str, int],
     global_space: GlobalStyleSpace,
 ) -> None:
     """Compute stylistic alignment metrics for candidate model against ground truth on shared FENs.
@@ -231,7 +231,7 @@ def evaluate_model_style_common_fens(
     )
     lazy_df = pl.scan_csv(csv_path).filter(pl.col("fen").is_in(common_fens))
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     player_pbar = tqdm.tqdm(
         players_dict.items(),
         desc=f"Evaluating {model_name} (Common FENs)",
@@ -252,12 +252,12 @@ def evaluate_model_style_common_fens(
             gc.collect()
             continue
 
-        fens: List[str] = player_data["fen"].to_list()
-        player_moves: List[str] = player_data["move"].to_list()
-        model_moves: List[Optional[str]] = player_data["predicted_move"].to_list()
+        fens: list[str] = player_data["fen"].to_list()
+        player_moves: list[str] = player_data["move"].to_list()
+        model_moves: list[str | None] = player_data["predicted_move"].to_list()
 
-        p_vecs: List[np.ndarray] = []
-        m_vecs: List[np.ndarray] = []
+        p_vecs: list[np.ndarray] = []
+        m_vecs: list[np.ndarray] = []
 
         encoding_pbar = tqdm.tqdm(
             zip(fens, player_moves, model_moves),

@@ -7,7 +7,6 @@ Leverages representations extracted via Autoencoder + cuML UMAP + Spatial Grid J
 import csv
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR: Path = Path("tables")
 
 # Configuration mapping model identifiers to common FEN stylistic evaluation dataset paths
-RESULTS_CONFIG: Dict[str, str] = {
+RESULTS_CONFIG: dict[str, str] = {
     # Policy Models
     "Maia-2 Baseline": "data/maia_2_baseline_common_fens_style.csv",
     "Maia-2 FT": "data/maia_2_ft_common_fens_style.csv",
@@ -38,21 +37,21 @@ RESULTS_CONFIG: Dict[str, str] = {
     "Maia-2 MoE-LoRA N. + MCTS": ("data/maia_2_moe_lora_n__mcts_common_fens_style.csv"),
 }
 
-POLICY_MODELS: List[str] = [
+POLICY_MODELS: list[str] = [
     "Maia-2 Baseline",
     "Maia-2 FT",
     "Maia-2 Nucleus",
     "Maia-2 MoE-LoRA",
 ]
 
-DESCENT_MODELS: List[str] = [
+DESCENT_MODELS: list[str] = [
     "Maia-2 Descent",
     "Maia-2 N. + Descent",
     "Maia-2 FT + N. + Descent",
     "Maia-2 MoE-LoRA N. + Descent",
 ]
 
-MCTS_MODELS: List[str] = [
+MCTS_MODELS: list[str] = [
     "Maia-2 MCTS",
     "Maia-2 N. + MCTS",
     "Maia-2 FT + N. + MCTS",
@@ -61,8 +60,8 @@ MCTS_MODELS: List[str] = [
 
 
 def load_style_data_from_csv(
-    config: Dict[str, str], metric_column: str = "style_jsd"
-) -> Dict[str, Dict[str, float]]:
+    config: dict[str, str], metric_column: str = "style_jsd"
+) -> dict[str, dict[str, float]]:
     """Load stylistic divergence metrics from configured CSV result files.
 
     Args:
@@ -72,7 +71,7 @@ def load_style_data_from_csv(
     Returns:
         Dict[str, Dict[str, float]]: Nested mapping of model names to subject-level Style JSD values.
     """
-    data: Dict[str, Dict[str, float]] = {}
+    data: dict[str, dict[str, float]] = {}
     for model_name, path_str in config.items():
         path = Path(path_str)
         data[model_name] = {}
@@ -93,7 +92,7 @@ def load_style_data_from_csv(
 
 
 def generate_summary_table(
-    data: Dict[str, Dict[str, float]],
+    data: dict[str, dict[str, float]],
     caption: str = "Overall Stylistic Jensen-Shannon Divergence (Style JSD) summary on common FEN positions across model variants.",
     label: str = "tab:style_jsd_summary_common_fens",
 ) -> str:
@@ -109,7 +108,7 @@ def generate_summary_table(
     Returns:
         str: Formatted LaTeX source code representing the output summary table.
     """
-    model_stats: Dict[str, Tuple[float, float]] = {}
+    model_stats: dict[str, tuple[float, float]] = {}
     for model_name, player_dict in data.items():
         valid_vals = [
             v
@@ -126,7 +125,7 @@ def generate_summary_table(
     # Lower divergence value indicates superior stylistic and behavioral alignment
     best_mean = min(stats[0] for stats in model_stats.values()) if model_stats else None
 
-    latex: List[str] = []
+    latex: list[str] = []
     latex.append("\\begin{table}[!htbp]")
     latex.append("  \\centering")
     latex.append(f"  \\caption{{{caption}}}")
@@ -160,8 +159,8 @@ def generate_summary_table(
 
 
 def generate_player_breakdown_table(
-    data: Dict[str, Dict[str, float]],
-    selected_models: Optional[List[str]] = None,
+    data: dict[str, dict[str, float]],
+    selected_models: list[str] | None = None,
     caption: str = "Detailed Stylistic Jensen-Shannon Divergence per player evaluated on common FEN positions.",
     label: str = "tab:style_jsd_breakdown_common_fens",
 ) -> str:
@@ -193,7 +192,7 @@ def generate_player_breakdown_table(
 
     col_spec = "l" + "c" * len(models)
 
-    latex: List[str] = []
+    latex: list[str] = []
     latex.append("\\begin{table}[!htbp]")
     latex.append("  \\centering")
     latex.append(f"  \\caption{{{caption}}}")
@@ -234,7 +233,7 @@ def generate_player_breakdown_table(
     latex.append("      \\midrule")
 
     # Aggregate mean performance metrics across subject cohorts
-    avg_vals: Dict[str, float] = {}
+    avg_vals: dict[str, float] = {}
     for model in models:
         model_dict = data[model]
         valid_vals = [

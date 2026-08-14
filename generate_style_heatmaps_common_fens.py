@@ -8,7 +8,6 @@ import logging
 import os
 import random
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR: Path = Path("figures")
 DATA_DIR: Path = Path("data")
 
-PREDICTION_FILES: Dict[str, Path] = {
+PREDICTION_FILES: dict[str, Path] = {
     "Maia-2 Baseline": DATA_DIR / "maia2_predictions.csv",
     "Maia-2 FT": DATA_DIR / "maia2_ft_predictions.csv",
     "Maia-2 Nucleus": DATA_DIR / "maia2_nucleus_predictions.csv",
@@ -66,7 +65,7 @@ def set_seed(seed: int = 42) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def extract_common_fens(positions_file: Path, players_dict: Dict[str, int]) -> Set[str]:
+def extract_common_fens(positions_file: Path, players_dict: dict[str, int]) -> set[str]:
     """Retrieve the common FEN intersection observed across all subjects.
 
     Args:
@@ -93,8 +92,8 @@ def extract_common_fens(positions_file: Path, players_dict: Dict[str, int]) -> S
 
 def build_global_reference_space_common_fens(
     positions_file: Path,
-    common_fens: Set[str],
-    players_dict: Dict[str, int],
+    common_fens: set[str],
+    players_dict: dict[str, int],
     device: torch.device,
     memmap_path: Path = DATA_DIR / "reference_transitions_common_fens.dat",
     seed: int = 42,
@@ -177,10 +176,10 @@ def build_global_reference_space_common_fens(
 
 def build_model_vs_player_common_fens_matrix(
     model_predictions_file: Path,
-    common_fens: Set[str],
+    common_fens: set[str],
     global_space: GlobalStyleSpace,
-    players_dict: Dict[str, int],
-) -> Tuple[np.ndarray, List[str]]:
+    players_dict: dict[str, int],
+) -> tuple[np.ndarray, list[str]]:
     """Compute square stylistic divergence matrix on common FEN positions.
 
     Args:
@@ -232,8 +231,8 @@ def build_model_vs_player_common_fens_matrix(
                 .collect()
             )
 
-            p_vecs: List[np.ndarray] = []
-            m_vecs: List[np.ndarray] = []
+            p_vecs: list[np.ndarray] = []
+            m_vecs: list[np.ndarray] = []
 
             for row in real_data.iter_rows(named=True):
                 fen = row["fen"]
@@ -273,7 +272,7 @@ def build_model_vs_player_common_fens_matrix(
 
 def plot_jsd_heatmap(
     jsd_matrix: np.ndarray,
-    player_names: List[str],
+    player_names: list[str],
     output_path: Path,
     title: str,
     y_label: str = "Model Conditioned Player",
