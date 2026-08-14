@@ -299,7 +299,7 @@ if __name__ == "__main__":
     )
     descent_path = OUTPUT_DIR / "descent_accuracy_table.tex"
     with open(descent_path, "w", encoding="utf-8") as f:
-        f.write(descent_path)
+        f.write(descent_tex)
 
     # 4. Detailed MCTS models table construction
     mcts_tex = generate_player_breakdown_table(
