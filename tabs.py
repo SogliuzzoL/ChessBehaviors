@@ -46,16 +46,19 @@ KEY_MODELS: list[str] = [
 ]
 
 CONFIG_ACCURACY: dict[str, str] = {
+    # Direct Policy
     "Maia-2 Baseline": "data/maia2_accuracies.csv",
     "Maia-2 FT": "data/maia2_ft_accuracies.csv",
     "Maia-2 Nucleus": "data/maia2_nucleus_accuracies.csv",
     "Maia-2 MoE-LoRA": "data/maia2_moe_lora_accuracies.csv",
+    # Descent Search
     "Maia-2 Descent": "data/maia2_descent_50_accuracies.csv",
     "Maia-2 N. + Descent": "data/maia2_nucleus_descent_50_accuracies.csv",
     "Maia-2 FT + N. + Descent": "data/maia2_ft_nucleus_descent_50_accuracies.csv",
     "Maia-2 MoE-LoRA N. + Descent": (
         "data/maia2_moe_lora_nucleus_descent_50_accuracies.csv"
     ),
+    # MCTS Search
     "Maia-2 MCTS": "data/maia2_mcts_accuracies.csv",
     "Maia-2 N. + MCTS": "data/maia2_nucleus_mcts_accuracies.csv",
     "Maia-2 FT + N. + MCTS": "data/maia2_ft_nucleus_mcts_accuracies.csv",
@@ -63,14 +66,17 @@ CONFIG_ACCURACY: dict[str, str] = {
 }
 
 CONFIG_CP_ERROR: dict[str, str] = {
+    # Direct Policy
     "Maia-2 Baseline": "data/maia_2_baseline_cp_error.csv",
     "Maia-2 FT": "data/maia_2_ft_cp_error.csv",
     "Maia-2 Nucleus": "data/maia_2_nucleus_cp_error.csv",
     "Maia-2 MoE-LoRA": "data/maia_2_moe_lora_cp_error.csv",
+    # Descent Search
     "Maia-2 Descent": "data/maia_2_descent_cp_error.csv",
     "Maia-2 N. + Descent": "data/maia_2_n__descent_cp_error.csv",
     "Maia-2 FT + N. + Descent": "data/maia_2_ft__n__descent_cp_error.csv",
     "Maia-2 MoE-LoRA N. + Descent": "data/maia_2_moe_lora_n__descent_cp_error.csv",
+    # MCTS Search
     "Maia-2 MCTS": "data/maia_2_mcts_cp_error.csv",
     "Maia-2 N. + MCTS": "data/maia_2_n__mcts_cp_error.csv",
     "Maia-2 FT + N. + MCTS": "data/maia_2_ft__n__mcts_cp_error.csv",
@@ -78,52 +84,79 @@ CONFIG_CP_ERROR: dict[str, str] = {
 }
 
 CONFIG_JSD_COMMON: dict[str, str] = {
+    # Direct Policy
     "Maia-2 Baseline": "data/maia_2_baseline_common_fens_jsd.csv",
     "Maia-2 FT": "data/maia_2_ft_common_fens_jsd.csv",
     "Maia-2 Nucleus": "data/maia_2_nucleus_common_fens_jsd.csv",
     "Maia-2 MoE-LoRA": "data/maia_2_moe_lora_common_fens_jsd.csv",
+    # Descent Search
     "Maia-2 Descent": "data/maia_2_descent_common_fens_jsd.csv",
     "Maia-2 N. + Descent": "data/maia_2_n__descent_common_fens_jsd.csv",
     "Maia-2 FT + N. + Descent": "data/maia_2_ft__n__descent_common_fens_jsd.csv",
     "Maia-2 MoE-LoRA N. + Descent": (
         "data/maia_2_moe_lora_n__descent_common_fens_jsd.csv"
     ),
+    # MCTS Search
     "Maia-2 MCTS": "data/maia_2_mcts_common_fens_jsd.csv",
     "Maia-2 N. + MCTS": "data/maia_2_n__mcts_common_fens_jsd.csv",
     "Maia-2 FT + N. + MCTS": "data/maia_2_ft__n__mcts_common_fens_jsd.csv",
     "Maia-2 MoE-LoRA N. + MCTS": "data/maia_2_moe_lora_n__mcts_common_fens_jsd.csv",
 }
 
-CONFIG_STYLE_ALL: dict[str, str] = {
-    "Maia-2 Baseline": "data/maia_2_baseline_style.csv",
-    "Maia-2 FT": "data/maia_2_ft_style.csv",
-    "Maia-2 Nucleus": "data/maia_2_nucleus_style.csv",
-    "Maia-2 MoE-LoRA": "data/maia_2_moe_lora_style.csv",
-    "Maia-2 Descent": "data/maia_2_descent_style.csv",
-    "Maia-2 N. + Descent": "data/maia_2_n__descent_style.csv",
-    "Maia-2 FT + N. + Descent": "data/maia_2_ft__n__descent_style.csv",
-    "Maia-2 MoE-LoRA N. + Descent": "data/maia_2_moe_lora_n__descent_style.csv",
-    "Maia-2 MCTS": "data/maia_2_mcts_style.csv",
-    "Maia-2 N. + MCTS": "data/maia_2_n__mcts_style.csv",
-    "Maia-2 FT + N. + MCTS": "data/maia_2_ft__n__mcts_style.csv",
-    "Maia-2 MoE-LoRA N. + MCTS": "data/maia_2_moe_lora_n__mcts_style.csv",
+CONFIG_JSD_ALL: dict[str, str] = {
+    # Direct Policy
+    "Maia-2 Baseline": "data/maia_2_baseline_jsd.csv",
+    "Maia-2 FT": "data/maia_2_ft_jsd.csv",
+    "Maia-2 Nucleus": "data/maia_2_nucleus_jsd.csv",
+    "Maia-2 MoE-LoRA": "data/maia_2_moe_lora_jsd.csv",
+    # Descent Search
+    "Maia-2 Descent": "data/maia_2_descent_jsd.csv",
+    "Maia-2 N. + Descent": "data/maia_2_n__descent_jsd.csv",
+    "Maia-2 FT + N. + Descent": "data/maia_2_ft__n__descent_jsd.csv",
+    "Maia-2 MoE-LoRA N. + Descent": "data/maia_2_moe_lora_n__descent_jsd.csv",
+    # MCTS Search
+    "Maia-2 MCTS": "data/maia_2_mcts_jsd.csv",
+    "Maia-2 N. + MCTS": "data/maia_2_n__mcts_jsd.csv",
+    "Maia-2 FT + N. + MCTS": "data/maia_2_ft__n__mcts_jsd.csv",
+    "Maia-2 MoE-LoRA N. + MCTS": "data/maia_2_moe_lora_n__mcts_jsd.csv",
 }
 
 CONFIG_STYLE_COMMON: dict[str, str] = {
+    # Direct Policy
     "Maia-2 Baseline": "data/maia_2_baseline_common_fens_style.csv",
     "Maia-2 FT": "data/maia_2_ft_common_fens_style.csv",
     "Maia-2 Nucleus": "data/maia_2_nucleus_common_fens_style.csv",
     "Maia-2 MoE-LoRA": "data/maia_2_moe_lora_common_fens_style.csv",
+    # Descent Search
     "Maia-2 Descent": "data/maia_2_descent_common_fens_style.csv",
     "Maia-2 N. + Descent": "data/maia_2_n__descent_common_fens_style.csv",
     "Maia-2 FT + N. + Descent": "data/maia_2_ft__n__descent_common_fens_style.csv",
     "Maia-2 MoE-LoRA N. + Descent": (
         "data/maia_2_moe_lora_n__descent_common_fens_style.csv"
     ),
+    # MCTS Search
     "Maia-2 MCTS": "data/maia_2_mcts_common_fens_style.csv",
     "Maia-2 N. + MCTS": "data/maia_2_n__mcts_common_fens_style.csv",
     "Maia-2 FT + N. + MCTS": "data/maia_2_ft__n__mcts_common_fens_style.csv",
     "Maia-2 MoE-LoRA N. + MCTS": "data/maia_2_moe_lora_n__mcts_common_fens_style.csv",
+}
+
+CONFIG_STYLE_ALL: dict[str, str] = {
+    # Direct Policy
+    "Maia-2 Baseline": "data/maia_2_baseline_style.csv",
+    "Maia-2 FT": "data/maia_2_ft_style.csv",
+    "Maia-2 Nucleus": "data/maia_2_nucleus_style.csv",
+    "Maia-2 MoE-LoRA": "data/maia_2_moe_lora_style.csv",
+    # Descent Search
+    "Maia-2 Descent": "data/maia_2_descent_style.csv",
+    "Maia-2 N. + Descent": "data/maia_2_n__descent_style.csv",
+    "Maia-2 FT + N. + Descent": "data/maia_2_ft__n__descent_style.csv",
+    "Maia-2 MoE-LoRA N. + Descent": "data/maia_2_moe_lora_n__descent_style.csv",
+    # MCTS Search
+    "Maia-2 MCTS": "data/maia_2_mcts_style.csv",
+    "Maia-2 N. + MCTS": "data/maia_2_n__mcts_style.csv",
+    "Maia-2 FT + N. + MCTS": "data/maia_2_ft__n__mcts_style.csv",
+    "Maia-2 MoE-LoRA N. + MCTS": "data/maia_2_moe_lora_n__mcts_style.csv",
 }
 
 
@@ -171,7 +204,6 @@ def generate_master_summary_table(
     style_com_data: dict[str, dict[str, float]],
     models: list[str] = ALL_MODELS,
 ) -> str:
-    """Generate comprehensive summary table comparing all 12 model variants across all 4 key metrics."""
     acc_stats = {m: compute_stats(acc_data.get(m, {})) for m in models}
     cp_stats = {m: compute_stats(cp_data.get(m, {})) for m in models}
     jsd_stats = {m: compute_stats(jsd_com_data.get(m, {})) for m in models}
@@ -210,12 +242,10 @@ def generate_master_summary_table(
                 "      \\midrule\n      \\multicolumn{5}{l}{\\textit{MCTS Search Variants}} \\\\[2pt]"
             )
 
-        acc_s, cp_s, jsd_s, st_s = (
-            acc_stats.get(m),
-            cp_stats.get(m),
-            jsd_stats.get(m),
-            style_stats.get(m),
-        )
+        acc_s = acc_stats.get(m)
+        cp_s = cp_stats.get(m)
+        jsd_s = jsd_stats.get(m)
+        st_s = style_stats.get(m)
 
         acc_str = f"{acc_s[0] * 100:.2f}\\%" if acc_s else "--"
         if acc_s and best_acc and abs(acc_s[0] - best_acc) < 1e-7:
@@ -457,8 +487,9 @@ if __name__ == "__main__":
     acc_data = load_metric_data(CONFIG_ACCURACY, "accuracy")
     cp_data = load_metric_data(CONFIG_CP_ERROR, "cp_error")
     jsd_com_data = load_metric_data(CONFIG_JSD_COMMON, "mean_jsd")
-    style_all_data = load_metric_data(CONFIG_STYLE_ALL, "style_jsd")
+    jsd_all_data = load_metric_data(CONFIG_JSD_ALL, "mean_jsd")
     style_com_data = load_metric_data(CONFIG_STYLE_COMMON, "style_jsd")
+    style_all_data = load_metric_data(CONFIG_STYLE_ALL, "style_jsd")
 
     # 1. Master Table Export
     logger.info("Generating Master Overview table...")
